@@ -1,10 +1,10 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>スマホハンディ</title>
-  <!-- build: responsive-v2-urls-applied -->
+<title>スマホハンディ</title>
+  <!-- build: viewport-force-v1-responsive-urls-applied -->
   <style>
     :root {
       --app-max-width: 520px;
@@ -613,6 +613,36 @@
         min-height: 40px;
       }
     }
+
+    /* build: viewport-force-v1 */
+    @media (max-width: 599px) {
+      html,
+      body {
+        width: 100% !important;
+        min-width: 0 !important;
+        max-width: none !important;
+        overflow-x: hidden !important;
+      }
+
+      h1,
+      .step-container {
+        width: 100vw !important;
+        max-width: none !important;
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+      }
+
+      .step-container {
+        padding-left: 10px !important;
+        padding-right: 10px !important;
+      }
+
+      .video-container {
+        width: 100% !important;
+        max-width: none !important;
+      }
+    }
+
   </style>
 </head>
 <body>
