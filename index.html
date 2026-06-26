@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>スマホハンディ</title>
-  <script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=YnqZhwdt5G4hcTGG9RmdArLDTezfKKCqhJ9pjkXvqYGsDrAn8gjPHPNdPYO8jbp-x-d6oZdS52JQiM24suL1lZddYIbf5jUFhUU-3Mk7aMfncNw5iIVG00c53nfOY7jD044vH6ze4hJds0wogEX4V1YA3cXy8twHEIi7d8I_Tw6amHDNLeHBacS1-2a3iotvH0Sfif1coOr2DD7CUN9kkJgLLvI8GmrP962G_gDcQCuY71Qbh-cgvVTK34ahmj_bEze1VnK1nNuWcvN3dH5RllPlmuA_7j4VX8h8t7c_wQ8fNhnEKFXnGW-ftuH-heiTlGOuMWprhPUB73acvSehew" charset="UTF-8"></script><style>
+  <script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=u5t0-xKKDNkyv1sUktApw-uKVEb-etSWkD6jnaSS-lkyPr2xCdRSLMshVGRwXIUg9qQCorpSPbDg68_25d88-GO78VC9s8Y2cx9VzOg8SAPJcQKDJoRugkRA0Vn8pzydlqKSr5ayTDpUnkAjX2ocnPPtFSCSwZ2I8lyOJIHG0Sn96Um1TBQu_Yvcm6nmCaZN3u6_x_dBjmuSgQdU7YrdQZ4wofvixwGvy2Fh2lYjWnEiX-RYLYwB3IIdlbScdqwe9CtpGKmCQffLPidQjs6E5pjBbbXRwbgZjOlJ-VfOQDSB4dWMZ-JZBD8FHFl-_y1lopDXqb4Yvp8Zr_tman6Iig" charset="UTF-8"></script><style>
     body {
       font-family: sans-serif; margin: 0; padding: 0; background: #f9f9f9;
       display: flex; flex-direction: column; align-items: center;
@@ -351,10 +351,11 @@
   </div>
 
   <script>
+
     const API_URL = 'https://script.google.com/macros/s/AKfycbxl-rQl4EMMzKhTB-ZeMzAO72RH8FoSBXkyEgfHWZpPpJBEPTt_g1Z4jWiBspzvxSST/exec';
 
     const ENTRY_URL = 'https://script.google.com/a/macros/ecodesign-labo.jp/s/AKfycbzrsH5D8jvKS983UjvefktdAzKDBujEWUj3PIW8GATr5O1tMC8zdrDb6tZSGbPZEQ0/exec';
-
+    
     const TOKEN_STORAGE_KEY = 'handy_auth_token';
     let authToken = '';
     let loginUserName = '';
@@ -941,7 +942,7 @@
           resolve(false);
         }, 8000);
 
-        script.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js';
+        script.src = './vendor/zxing.min.js';
         script.async = true;
 
         script.onload = function() {
