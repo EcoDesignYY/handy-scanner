@@ -3,8 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>スマホハンディ</title>
-  <script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=u3ga4IpnCWRo8vBjkMg353l1GWyyHHGwd1rYMWSn0FjBnbjem_-ZtL3Snb9OzBivMyQZ9YAQaUkw6ACZaZ3tGn7RN4gImdi95IZZwnpgiskdj6xA6xdn0HQ7D_MWhTitgU8Z66Al0dBhvDSByObJHn5-c6m3LRhYORY68XsY74gFc9Qwe9bqeTttofn68ICpkZwG2hJ80_f6N7S0SvbpJRL8DKQC7M8KLGS3vvryuNjRGJHJu402TgtnFTaxLwbblw79-lfhhFCds_NqX55hNwO3td0jW98zmJPiJR9B6Zl6zDhyzrxsekrZUGEWIa_8_2zayOOueAVIN6U9MHXT9A" charset="UTF-8"></script><script defer src="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js"></script>
-  <style>
+  <script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=YnqZhwdt5G4hcTGG9RmdArLDTezfKKCqhJ9pjkXvqYGsDrAn8gjPHPNdPYO8jbp-x-d6oZdS52JQiM24suL1lZddYIbf5jUFhUU-3Mk7aMfncNw5iIVG00c53nfOY7jD044vH6ze4hJds0wogEX4V1YA3cXy8twHEIi7d8I_Tw6amHDNLeHBacS1-2a3iotvH0Sfif1coOr2DD7CUN9kkJgLLvI8GmrP962G_gDcQCuY71Qbh-cgvVTK34ahmj_bEze1VnK1nNuWcvN3dH5RllPlmuA_7j4VX8h8t7c_wQ8fNhnEKFXnGW-ftuH-heiTlGOuMWprhPUB73acvSehew" charset="UTF-8"></script><style>
     body {
       font-family: sans-serif; margin: 0; padding: 0; background: #f9f9f9;
       display: flex; flex-direction: column; align-items: center;
@@ -924,6 +923,44 @@
     const AUTO_ZOOM_ENABLED = true;
     const DEFAULT_CAMERA_ZOOM = 1.4; 
 
+    let zxingLoadPromise = null;
+
+    function loadZxingLibrary() {
+      if (window.ZXing) {
+        return Promise.resolve(true);
+      }
+
+      if (zxingLoadPromise) {
+        return zxingLoadPromise;
+      }
+
+      zxingLoadPromise = new Promise(function(resolve) {
+        const script = document.createElement('script');
+        const timer = setTimeout(function() {
+          console.warn('ZXing library load timeout');
+          resolve(false);
+        }, 8000);
+
+        script.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js';
+        script.async = true;
+
+        script.onload = function() {
+          clearTimeout(timer);
+          resolve(!!window.ZXing);
+        };
+
+        script.onerror = function() {
+          clearTimeout(timer);
+          console.warn('ZXing library load failed');
+          resolve(false);
+        };
+
+        document.head.appendChild(script);
+      });
+
+      return zxingLoadPromise;
+    }
+
     async function initDecoder() {
       if (!isDecoding) {
         isDecoding = true;
@@ -938,14 +975,25 @@
               }); 
               useDetector = true;
             }
-          } catch(e) {}
+          } catch(e) {
+            console.warn('BarcodeDetector init failed:', e);
+          }
         }
         
-        if (!useDetector && window.ZXing) { 
-          zxingReader = new ZXing.BrowserMultiFormatReader(); 
+        if (!useDetector) {
+          const loaded = await loadZxingLibrary();
+          if (loaded && window.ZXing) {
+            zxingReader = new ZXing.BrowserMultiFormatReader();
+          } else {
+            console.warn('No barcode decoder is available');
+            alert('バーコード読取ライブラリの読み込みに失敗しました。通信状態を確認して再読み込みしてください。');
+          }
         }
       }
-      if (scanMode && (detector || zxingReader)) startScanner();
+
+      if (scanMode && (detector || zxingReader)) {
+        startScanner();
+      }
     }
 
     async function startCamera(videoId) {
@@ -960,7 +1008,7 @@
         await videoElement.play().catch(console.warn);
         if (AUTO_ZOOM_ENABLED) await applyCameraZoom(DEFAULT_CAMERA_ZOOM);
         await focusCenter();
-        initDecoder();
+        await initDecoder();
         return;
       }
 
@@ -1010,7 +1058,7 @@
           });
         }
 
-        initDecoder();
+        await initDecoder();
 
       } catch (err) {
         console.error('camera error:', err);
