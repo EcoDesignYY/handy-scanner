@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>スマホハンディ</title>
-  <script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=sRqoxu0JnwEFst5qHjdM7MglD4eKPbj8KvKL1FjgspAQdVHJmKZWiIWk_gV9FJ8-zGFmCODRF79RPUFqjUhNEzUaox6VCjY5skUiMReRsflMXU_KEwV_vXJlOURjrjv_42QD3HAHzQKHF0F2r4R8QNvwoJODeJZ9Bv9wbP1fSjbwfNztULPpe7YpOeKdaESxlIADGNn-ZEmuxXo7UWLJGXLbzTqVFdYi5SuUL3TFTKasglQSrZTdxWcnYzvl7LOmDz54gLfIXJtVdwzDJL8703bo97CwZMzCFET34YRAKwUAVuPSvIdaCpbJ5FGK7KSwKe4m-ymX1Zq9z1K7j8WAag" charset="UTF-8"></script><script defer src="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js"></script>
+  <script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=u3ga4IpnCWRo8vBjkMg353l1GWyyHHGwd1rYMWSn0FjBnbjem_-ZtL3Snb9OzBivMyQZ9YAQaUkw6ACZaZ3tGn7RN4gImdi95IZZwnpgiskdj6xA6xdn0HQ7D_MWhTitgU8Z66Al0dBhvDSByObJHn5-c6m3LRhYORY68XsY74gFc9Qwe9bqeTttofn68ICpkZwG2hJ80_f6N7S0SvbpJRL8DKQC7M8KLGS3vvryuNjRGJHJu402TgtnFTaxLwbblw79-lfhhFCds_NqX55hNwO3td0jW98zmJPiJR9B6Zl6zDhyzrxsekrZUGEWIa_8_2zayOOueAVIN6U9MHXT9A" charset="UTF-8"></script><script defer src="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js"></script>
   <style>
     body {
       font-family: sans-serif; margin: 0; padding: 0; background: #f9f9f9;
@@ -352,12 +352,8 @@
   </div>
 
   <script>
-    // 登録用GAS WebアプリURL
-    // token検証を追加した登録用GASの /exec URL にしてください。
     const API_URL = 'https://script.google.com/macros/s/AKfycbxl-rQl4EMMzKhTB-ZeMzAO72RH8FoSBXkyEgfHWZpPpJBEPTt_g1Z4jWiBspzvxSST/exec';
 
-    // 入口GAS WebアプリURL
-    // デプロイ後、必ず実際の /exec URL に差し替えてください。
     const ENTRY_URL = 'https://script.google.com/a/macros/ecodesign-labo.jp/s/AKfycbzrsH5D8jvKS983UjvefktdAzKDBujEWUj3PIW8GATr5O1tMC8zdrDb6tZSGbPZEQ0/exec';
 
     const TOKEN_STORAGE_KEY = 'handy_auth_token';
@@ -412,20 +408,42 @@
       location.href = ENTRY_URL;
     }
 
+
     function postApi(action, payload) {
       const body = Object.assign({}, payload || {}, {
         action: action,
         token: authToken
       });
 
+      const controller = new AbortController();
+      const timer = setTimeout(function() {
+        controller.abort();
+      }, 15000);
+
       return fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify(body),
-        redirect: 'follow'
+        redirect: 'follow',
+        signal: controller.signal
       })
-      .then(response => response.json())
-      .then(result => {
+      .then(function(response) {
+        return response.text().then(function(text) {
+          if (!response.ok) {
+            throw new Error('API HTTPエラー: ' + response.status + ' / ' + text.slice(0, 200));
+          }
+
+          try {
+            return JSON.parse(text);
+          } catch (error) {
+            throw new Error(
+              'APIがJSONを返していません。登録用GASのデプロイ設定またはURLを確認してください。応答: ' +
+              text.slice(0, 200)
+            );
+          }
+        });
+      })
+      .then(function(result) {
         if (!result || result.status !== 'OK') {
           const message = result && result.message ? result.message : 'APIエラーが発生しました。';
 
@@ -442,6 +460,16 @@
         }
 
         return result;
+      })
+      .catch(function(error) {
+        if (error.name === 'AbortError') {
+          throw new Error('登録用GAS APIがタイムアウトしました。通信状態またはAPI_URLを確認してください。');
+        }
+
+        throw error;
+      })
+      .finally(function() {
+        clearTimeout(timer);
       });
     }
 
@@ -523,46 +551,45 @@
         alert("まだ通信が回復していないようです。\nもう少し移動してからお試しください。");
       }
     }
-
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     let audioCtx = null;
-    
+
     function getAudioContext() {
       if (!AudioContextClass) {
         return null;
       }
-    
+
       if (!audioCtx) {
         audioCtx = new AudioContextClass();
       }
-    
+
       return audioCtx;
     }
-    
+
     function playBeep() {
       const ctx = getAudioContext();
-    
+
       if (!ctx) {
         return;
       }
-    
+
       if (ctx.state === 'suspended') {
         ctx.resume().catch(function() {});
       }
-    
+
       const oscillator = ctx.createOscillator();
       const gainNode = ctx.createGain();
-    
+
       oscillator.type = 'sine';
       oscillator.frequency.setValueAtTime(2000, ctx.currentTime);
-    
+
       gainNode.gain.setValueAtTime(0.8, ctx.currentTime);
       gainNode.gain.setValueAtTime(0.8, ctx.currentTime + 0.07);
       gainNode.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.1);
-    
+
       oscillator.connect(gainNode);
       gainNode.connect(ctx.destination);
-    
+
       oscillator.start();
       oscillator.stop(ctx.currentTime + 0.1);
     }
@@ -1304,7 +1331,20 @@
       }
     }
 
-    window.addEventListener('load', async () => {
+    window.addEventListener('error', function(event) {
+      console.error(event.error || event.message);
+      showFatalAuthError('画面初期化エラー: ' + (event.message || '不明なエラー'));
+    });
+
+    window.addEventListener('unhandledrejection', function(event) {
+      console.error(event.reason);
+      const message = event.reason && event.reason.message
+        ? event.reason.message
+        : String(event.reason);
+      showFatalAuthError('通信または初期化エラー: ' + message);
+    });
+
+    window.addEventListener('DOMContentLoaded', async function() {
       try {
         readAuthToken();
         await bootstrapApp();
