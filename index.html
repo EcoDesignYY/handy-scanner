@@ -4,8 +4,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
 <title>スマホハンディ</title>
-  <!-- build: no-pull-guard-v1 -->
-  <script src="./vendor/zxing.min.js?v=sync-zxing-1"></script>
+  <!-- build: no-pull-guard-history-buttons-v1 -->
   <style>
     :root {
       --app-max-width: 520px;
@@ -675,6 +674,16 @@
     .pick-status-registered { color: #0b8043; font-weight: bold; }
     .pick-status-error { color: #b31412; font-weight: bold; }
 
+    .inline-history-btn {
+      background: #e8eaed;
+      color: #333;
+      border: 1px solid #bbb;
+      font-size: 14px;
+      min-height: 40px;
+      padding: 8px;
+      margin: 4px 0 8px;
+    }
+
     .pick-history-toolbar {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -714,6 +723,7 @@
     <div class="bottom-buttons">
       <button onclick="goToStep(2)">YES (バーコードを読み取る)</button>
       <button class="secondary" onclick="skipJobNo()">NO (次へ進む)</button>
+      <button type="button" class="inline-history-btn" onclick="showPickHistory()">ピッキング履歴を確認</button>
     </div>
   </div>
 
@@ -752,6 +762,7 @@
     <select id="input-purpose"></select>
     <div class="bottom-buttons">
       <button onclick="saveInfoAndGoNext()">次へ (対象の読取へ)</button>
+      <button type="button" class="inline-history-btn" onclick="showPickHistory()">ピッキング履歴を確認</button>
       <button class="secondary" onclick="goToStep(1)">最初に戻る</button>
     </div>
   </div>
@@ -780,6 +791,7 @@
     </div>
 
     <div class="bottom-buttons">
+      <button type="button" class="inline-history-btn" onclick="showPickHistory()">ピッキング履歴を確認</button>
       <button class="secondary" onclick="goToStep(3)">戻る</button>
       <button class="danger" onclick="finishWorkAndSend()">作業を終了して送信する</button>
     </div>
@@ -813,6 +825,7 @@
     
     <div class="bottom-buttons">
       <button onclick="submitData(false)">保存して【次】を読み取る</button>
+      <button type="button" class="inline-history-btn" onclick="showPickHistory()">ピッキング履歴を確認</button>
       <button id="btn-submit-finish" class="danger" onclick="submitData(true)">保存して【作業を終了・まとめて送信】する</button>
       <button class="secondary" onclick="goToStep(4)">読み直す / 戻る</button>
     </div>
@@ -2842,6 +2855,9 @@
         } catch (bootstrapError) {
           bootstrapTimedOut = true;
           console.error('bootstrap startup error:', bootstrapError);
+
+          // bootstrap失敗でもtoken内ユーザーで続行する。
+          // 現場作業を止めないため、担当者selectには fallback user を残す。
           setBootStatus('ユーザー情報の取得に失敗しました。認証ユーザーで続行中。', true);
 
           setTimeout(function() {
