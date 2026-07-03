@@ -4,7 +4,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
 <title>スマホハンディ</title>
-  <!-- build: reload-safe-pull-guard-v1 -->
+  <!-- build: sync-bootstrap-sync-zxing-v1 -->
+  <script src="./vendor/zxing.min.js?v=sync-zxing-1"></script>
   <style>
     :root {
       --app-max-width: 520px;
@@ -2026,14 +2027,16 @@
         return zxingLoadPromise;
       }
 
+      // 通常はhead内の <script src="./vendor/zxing.min.js"> で読み込み済み。
+      // ここは読み込み失敗時の保険として残す。
       zxingLoadPromise = new Promise(function(resolve) {
         const script = document.createElement('script');
         const timer = setTimeout(function() {
-          console.warn('ZXing library load timeout');
+          console.warn('ZXing library fallback load timeout');
           resolve(false);
         }, 8000);
 
-        script.src = './vendor/zxing.min.js';
+        script.src = './vendor/zxing.min.js?v=sync-zxing-fallback-1';
         script.async = true;
 
         script.onload = function() {
@@ -2043,7 +2046,7 @@
 
         script.onerror = function() {
           clearTimeout(timer);
-          console.warn('ZXing library load failed');
+          console.warn('ZXing library fallback load failed');
           resolve(false);
         };
 
@@ -2596,18 +2599,21 @@
       }
     }, 8000);
 
-    window.addEventListener('DOMContentLoaded', function() {
+    window.addEventListener('DOMContentLoaded', async function() {
       try {
         installPullToRefreshGuard_();
         installBeforeUnloadGuard_();
 
-        // 初期表示ではGAS通信を待たない。
-        // モバイル社内回線でGAS応答読取が遅延しても、画面操作を先に可能にする。
+        // Kaspersky混入が主因だったため、ユーザー情報取得は起動時に戻す。
+        // 担当者リスト取得完了後に通常操作を開始する。
         readAuthToken();
         applyLoginUserFromTokenFallback_();
-        initQueue();
 
-        setTimeout(loadBootstrapInBackground_, 100);
+        setBootStatus('ユーザー情報を確認中...');
+        await bootstrapApp();
+        setBootStatus('');
+
+        initQueue();
 
       } catch (error) {
         console.error(error);
