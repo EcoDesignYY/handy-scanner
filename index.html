@@ -4,8 +4,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
 <title>スマホハンディ</title>
-  <!-- build: batch-ack-history-v1 -->
-  <script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=iNMkjJCKzi8SHIaEnngmiJ-q7QeACGHea5PrRg2ndETKg1QKzCAI-icH-ywJFCzCB_yIGXgjeJtp0fj-sIKCnPOEBmmBJyN6DNwMecmieznhpB1NqOtkCC20NQfFvst-IDaDEMGpmW3tkQUfM5_Uf7mv1KioD7CUsSpVe5qvLo-Yp4td3mzBTtJQ97pZlOl3UjE8IsDIX34Upk4OBNY5M1A1Wfg1dzeHdLfRLuqc8NxWPUw-8rQLzBys6wwvhvhZYdeJER6kW0ds6jcKZctEzF9tq5Z4yKmQO69CaT5RThOg-YMLX6-R6FQDSGl7F6T4xgNZTZ4oYJWNNzU3ftCJpg" charset="UTF-8"></script><style>
+  <!-- build: batch-ack-history-fast-bootstrap-v1 -->
+  <script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=vjb5tgnk2tFVRSaKQW2t7YniQf98l1204lEnbMgAdvfuLbv-3qwANT5-006a1r3r9ZHqWJ_grby9uC0-utPGIOoeGlC2n6cd96S-9xWcLSgnQZ-b7jyZHCuKtlkTJn_YNePljk6p9pKwFE1_5BWq05XV17r0pe2VRnknNoG2EDkjZiMCoZAqo5ATmryeHPtS5U9XerUuZu4xXtZGXYDRr8OdJadM4hpMKWuIgewJ4ABbYXC7qMotEDO5yYg7k1h-THb16HMjN5OfyPbXBw-qCqgdRhOHxie5w5r_-3uW3QZDlClPec5lzdGKqMvQA6GZCOE35__EsFrqKY4WalYdtLL2OISiTtVtJKP0A7B0fAw" charset="UTF-8"></script><style>
     :root {
       --app-max-width: 520px;
       --page-gap: 8px;
@@ -966,7 +966,13 @@
     }
 
     async function bootstrapApp() {
-      const result = await postApi('bootstrap', {});
+      // 初期データ取得はPOST fetchではなくJSONPにする。
+      // 社内ネットワークではGASのfetch応答読取が遅延することがあるため。
+      const url = API_URL +
+        '?action=bootstrap' +
+        '&token=' + encodeURIComponent(authToken);
+
+      const result = await jsonpRequest(url, 15000);
 
       loginUserName = result.userName || '';
       sessionData.person = loginUserName;
@@ -1382,7 +1388,8 @@
       updateQueueUI();
 
       if (apiQueue.length > 0) {
-        processQueue();
+        // 初期表示を優先する。未送信データの再送は画面表示後に開始する。
+        setTimeout(processQueue, 2000);
       }
     }
 
