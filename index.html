@@ -4,8 +4,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
 <title>スマホハンディ</title>
-  <!-- build: sync-bootstrap-sync-zxing-v1 -->
-  <script src="./vendor/zxing.min.js?v=sync-zxing-1"></script>
+  <!-- build: sync-zxing-bootstrap-timeout-v1 -->
   <style>
     :root {
       --app-max-width: 520px;
@@ -987,13 +986,20 @@
     }
 
     async function bootstrapApp() {
-      // 初期データ取得はPOST fetchではなくJSONPにする。
-      // 社内ネットワークではGASのfetch応答読取が遅延することがあるため。
+      // 初期データ取得はJSONP。
       const url = API_URL +
         '?action=bootstrap' +
         '&token=' + encodeURIComponent(authToken);
 
       const result = await jsonpRequest(url, 15000);
+
+      if (!result || result.status !== 'OK') {
+        throw new Error(
+          result && result.message
+            ? 'bootstrap APIエラー: ' + result.message
+            : 'bootstrap APIから正常な応答がありません。'
+        );
+      }
 
       loginUserName = result.userName || '';
       sessionData.person = loginUserName;
@@ -1004,10 +1010,10 @@
       const users = Array.isArray(result.allUsers) ? result.allUsers : [];
 
       if (users.length === 0) {
-        throw new Error('担当者リストを取得できませんでした。');
+        throw new Error('担当者リストを取得できませんでした。登録用GASの現従業員取得を確認してください。');
       }
 
-      users.forEach(name => {
+      users.forEach(function(name) {
         const option = document.createElement('option');
         option.value = name;
         option.textContent = name;
@@ -2599,19 +2605,45 @@
       }
     }, 8000);
 
+    function timeoutPromise_(ms, message) {
+      return new Promise(function(resolve, reject) {
+        setTimeout(function() {
+          reject(new Error(message));
+        }, ms);
+      });
+    }
+
     window.addEventListener('DOMContentLoaded', async function() {
       try {
         installPullToRefreshGuard_();
         installBeforeUnloadGuard_();
 
-        // Kaspersky混入が主因だったため、ユーザー情報取得は起動時に戻す。
-        // 担当者リスト取得完了後に通常操作を開始する。
         readAuthToken();
         applyLoginUserFromTokenFallback_();
 
         setBootStatus('ユーザー情報を確認中...');
-        await bootstrapApp();
-        setBootStatus('');
+
+        try {
+          // 起動時に担当者リストを取得する。ただしGAS応答が詰まった場合に表示を止め続けない。
+          await Promise.race([
+            bootstrapApp(),
+            timeoutPromise_(8000, 'ユーザー情報取得がタイムアウトしました。認証ユーザーで続行します。')
+          ]);
+
+          setBootStatus('');
+
+        } catch (bootstrapError) {
+          console.error('bootstrap startup error:', bootstrapError);
+
+          // bootstrap失敗でもtoken内ユーザーで続行する。
+          // 現場作業を止めないため、担当者selectには fallback user を残す。
+          setBootStatus('ユーザー情報の取得に失敗しました。認証ユーザーで続行中。', true);
+
+          setTimeout(function() {
+            // 操作時に邪魔にならないよう、数秒後に表示を消す。
+            setBootStatus('');
+          }, 5000);
+        }
 
         initQueue();
 
