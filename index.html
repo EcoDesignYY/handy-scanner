@@ -4,7 +4,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
 <title>スマホハンディ</title>
-  <!-- build: no-pull-guard-history-buttons-v1 -->
+  <!-- build: status-label-all-local-saved-v1 -->
+  <script src="./vendor/zxing.min.js?v=sync-zxing-1"></script>
   <style>
     :root {
       --app-max-width: 520px;
@@ -1650,6 +1651,7 @@
           }
 
           renderPickHistory();
+          refreshVisibleScanHistoryStatuses_();
         })
         .catch(function(error) {
           alert('サーバー履歴の取得に失敗しました: ' + error.message);
@@ -1684,6 +1686,7 @@
     function saveQueueToStorage() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(apiQueue));
       updateQueueUI();
+      refreshVisibleScanHistoryStatuses_();
     }
 
     function getNextBatch() {
@@ -2143,9 +2146,9 @@
       };
 
       if (isDelete) {
-        updateHistoryStatus(payloadId, "saving", "削除要求を端末内保存...");
+        updateHistoryStatus(payloadId, "saving", "削除要求を端末内保存済み");
       } else {
-        updateHistoryUI(payloadId, qty, "saving", "修正要求を端末内保存...");
+        updateHistoryUI(payloadId, qty, "saving", "修正要求を端末内保存済み");
       }
 
       addToQueue(payload, isDelete);
@@ -2174,7 +2177,7 @@
         items: [{ barcode: currentItemBarcode, qty: qty, id: payloadId }]
       };
 
-      addHistoryUI(payloadId, currentItemBarcode, qty, "saving", "順番待ち...");
+      addHistoryUI(payloadId, currentItemBarcode, qty, "saving", "端末内保存済み");
       addToQueue(payload, false);
 
       document.getElementById('input-qty').value = "1";
@@ -2183,11 +2186,56 @@
       if (isFinish) finishWorkAndSend(); else goToStep(4); 
     }
 
+
+    function refreshVisibleScanHistoryStatuses_() {
+      const historyRows = loadPickHistory();
+      const historyMap = {};
+      const queueMap = {};
+
+      historyRows.forEach(function(row) {
+        if (row && row.pickId) {
+          historyMap[row.pickId] = row;
+        }
+      });
+
+      apiQueue.forEach(function(pick) {
+        if (pick && pick.pickId) {
+          queueMap[pick.pickId] = pick;
+        }
+      });
+
+      Object.keys(historyContexts).forEach(function(pickId) {
+        const row = historyMap[pickId];
+        const queued = queueMap[pickId];
+
+        if (queued) {
+          if (queued.status === 'SENDING') {
+            updateHistoryStatus(pickId, 'saving', '送信中...');
+          } else if (queued.status === 'ERROR') {
+            updateHistoryStatus(pickId, 'error', '再送待機中');
+          } else {
+            updateHistoryStatus(pickId, 'saving', '端末内保存済み');
+          }
+          return;
+        }
+
+        if (row && row.status === 'REGISTERED') {
+          updateHistoryStatus(pickId, 'ok', '登録済み');
+          return;
+        }
+
+        if (row && row.status === 'RECEIVED') {
+          updateHistoryStatus(pickId, 'ok', 'GAS受信済み');
+          return;
+        }
+      });
+    }
+
     function addHistoryUI(id, code, qty, status, customText = "") {
       const list = document.getElementById('scan-history');
       const li = document.createElement('li');
       li.id = id; li.className = 'history-item';
-      let statusHtml = status === 'saving' ? `<span class="history-status status-saving">${customText || "保存中..."}</span>` : `<span class="history-status status-ok">保存済</span>`;
+      let statusHtml = status === 'saving' ? `<span class="history-status status-saving">${customText || "端末内保存済み"}</span>` : `<span class="history-status status-ok">保存済</span>`;
       li.innerHTML = `
         <div class="history-info"><span>${code} <small class="qty-label">(x${qty})</small></span>${statusHtml}</div>
         <button type="button" class="edit-btn" onclick="editHistory('${id}', '${code}', ${qty})">修正</button>
@@ -2209,7 +2257,7 @@
       if (li) {
         const statusSpan = li.querySelector('.history-status');
         if (status === "ok") { statusSpan.className = "history-status status-ok"; statusSpan.innerText = customText || "保存済"; } 
-        else if (status === "saving") { statusSpan.className = "history-status status-saving"; statusSpan.innerText = customText || "保存中..."; } 
+        else if (status === "saving") { statusSpan.className = "history-status status-saving"; statusSpan.innerText = customText || "端末内保存済み"; } 
         else if (status === "error") { statusSpan.className = "history-status status-error"; statusSpan.innerText = customText || "エラー"; }
       }
     }
