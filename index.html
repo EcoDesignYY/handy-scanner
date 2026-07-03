@@ -4,7 +4,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
 <title>スマホハンディ</title>
-  <!-- build: local-first-lazy-zxing-v1 -->
+  <!-- build: reload-safe-pull-guard-v1 -->
   <style>
     :root {
       --app-max-width: 520px;
@@ -45,6 +45,7 @@
       min-height: 100dvh;
       width: 100%;
       overflow: hidden;
+      overscroll-behavior: none;
       overscroll-behavior-y: none;
       font-size: var(--font-base);
     }
@@ -84,6 +85,8 @@
       overflow-y: auto;
       overflow-x: hidden;
       -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+      overscroll-behavior-y: contain;
     }
 
     .step-container.active {
@@ -826,6 +829,7 @@
       <div id="pick-history-list" style="max-height:55dvh; overflow:auto; border:1px solid #ddd; border-radius:8px; padding:8px; background:#fafafa;"></div>
       <div class="modal-buttons" style="margin-top:10px;">
         <button type="button" class="secondary" onclick="closePickHistory()">閉じる</button>
+        <button type="button" onclick="cleanupReceivedQueue()">残件を再計算</button>
         <button type="button" onclick="refreshServerHistory()">サーバー履歴更新</button>
       </div>
     </div>
@@ -882,18 +886,33 @@
       const hashParams = new URLSearchParams(location.hash.replace(/^#/, ''));
       const tokenFromHash = hashParams.get('token');
 
-      // 直接GitHub Pagesを開いた場合は、登録用GASへ通信せず即エラーにする。
-      // sessionStorageの古いtokenを自動再利用すると、スマホでbootstrap待ちが発生して表示が遅くなるため使わない。
-      if (!tokenFromHash) {
-        sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-        throw new Error('認証情報がありません。入口GASから開いてください。');
+      if (tokenFromHash) {
+        authToken = tokenFromHash;
+        sessionStorage.setItem(TOKEN_STORAGE_KEY, authToken);
+
+        // URL上にtokenを残さない。
+        history.replaceState(null, '', location.pathname + location.search);
+        return;
       }
 
-      authToken = tokenFromHash;
-      sessionStorage.setItem(TOKEN_STORAGE_KEY, authToken);
+      // 誤スワイプ/再読み込み対策。
+      // 同一タブ・同一ブラウザセッション内だけ sessionStorage のtokenを復元する。
+      // localStorageには保存しないため、端末に長期残存しない。
+      const tokenFromSession = sessionStorage.getItem(TOKEN_STORAGE_KEY);
 
-      // URL上にtokenを残さない。
-      history.replaceState(null, '', location.pathname + location.search);
+      if (tokenFromSession) {
+        authToken = tokenFromSession;
+
+        if (!isAuthTokenExpired_()) {
+          setBootStatus('再読み込み後の認証情報を復元しました。', false);
+          return;
+        }
+
+        sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+        authToken = '';
+      }
+
+      throw new Error('認証情報がありません。入口GASから開いてください。');
     }
 
     function redirectToEntry() {
@@ -1159,6 +1178,65 @@
       savePickHistory(rows);
     }
 
+
+    function getHistoryStatusMap_() {
+      const rows = loadPickHistory();
+      const map = {};
+
+      rows.forEach(function(row) {
+        if (row && row.pickId) {
+          map[row.pickId] = row.status || '';
+        }
+      });
+
+      return map;
+    }
+
+    function reconcileQueueWithHistory() {
+      const statusMap = getHistoryStatusMap_();
+
+      const before = apiQueue.length;
+
+      apiQueue = apiQueue.filter(function(pick) {
+        const status = statusMap[pick.pickId];
+
+        // GAS受信済みまたは登録済みなら、端末側の未受信キューからは削除してよい。
+        // ここが無いと、履歴は登録済みなのに「未受信データ 残り1件」が残る。
+        return !(status === 'RECEIVED' || status === 'REGISTERED');
+      });
+
+      return before !== apiQueue.length;
+    }
+
+    function resetStaleSendingPicks_() {
+      let changed = false;
+      const now = Date.now();
+
+      apiQueue.forEach(function(pick) {
+        if (pick.status !== 'SENDING') {
+          return;
+        }
+
+        const lastTry = pick.lastTryAt ? Date.parse(pick.lastTryAt) : 0;
+
+        // ブラウザ終了・再読込でSENDINGのまま残ったものは再送待機へ戻す。
+        if (!lastTry || now - lastTry > 60000) {
+          pick.status = 'ERROR';
+          pick.lastError = pick.lastError || '前回送信が中断されました。再送待機に戻します。';
+          pick.lastErrorAt = new Date().toISOString();
+
+          updatePickHistoryStatus(pick.pickId, 'ERROR', {
+            lastError: pick.lastError,
+            lastErrorAt: pick.lastErrorAt
+          });
+
+          changed = true;
+        }
+      });
+
+      return changed;
+    }
+
     function statusLabel(status) {
       if (status === 'PENDING') return '端末内未送信';
       if (status === 'SENDING') return '送信中';
@@ -1325,6 +1403,24 @@
       return Number(payload.exp) <= nowSec + 60;
     }
 
+
+    function cleanupReceivedQueue() {
+      const changed = reconcileQueueWithHistory();
+      const resetStale = resetStaleSendingPicks_();
+
+      if (changed || resetStale) {
+        saveQueueToStorage();
+      } else {
+        updateQueueUI();
+      }
+
+      renderPickHistory();
+
+      if (!changed && !resetStale) {
+        alert('再計算しました。削除対象の受信済みキューはありません。');
+      }
+    }
+
     function refreshServerHistory() {
       if (!authToken || isAuthTokenExpired_()) {
         alert('認証期限が切れています。入口GASから開き直してください。');
@@ -1369,6 +1465,13 @@
           });
 
           savePickHistory(rows);
+
+          if (reconcileQueueWithHistory()) {
+            saveQueueToStorage();
+          } else {
+            updateQueueUI();
+          }
+
           renderPickHistory();
         })
         .catch(function(error) {
@@ -1384,6 +1487,13 @@
         } catch(e) {
           apiQueue = [];
         }
+      }
+
+      const reconciled = reconcileQueueWithHistory();
+      const resetStale = resetStaleSendingPicks_();
+
+      if (reconciled || resetStale) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(apiQueue));
       }
 
       updateQueueUI();
@@ -2361,6 +2471,62 @@
       }
     }
 
+
+
+    function installBeforeUnloadGuard_() {
+      window.addEventListener('beforeunload', function(event) {
+        if (apiQueue && apiQueue.length > 0) {
+          event.preventDefault();
+          event.returnValue = '';
+        }
+      });
+    }
+
+    function installPullToRefreshGuard_() {
+      let startY = 0;
+      let startX = 0;
+
+      document.addEventListener('touchstart', function(event) {
+        if (!event.touches || event.touches.length !== 1) {
+          return;
+        }
+
+        startY = event.touches[0].clientY;
+        startX = event.touches[0].clientX;
+      }, { passive: true });
+
+      document.addEventListener('touchmove', function(event) {
+        if (!event.touches || event.touches.length !== 1) {
+          return;
+        }
+
+        const currentY = event.touches[0].clientY;
+        const currentX = event.touches[0].clientX;
+        const diffY = currentY - startY;
+        const diffX = currentX - startX;
+
+        // 横方向操作は阻害しない。
+        if (Math.abs(diffX) > Math.abs(diffY)) {
+          return;
+        }
+
+        const activeStep = document.querySelector('.step-container.active');
+        if (!activeStep) {
+          return;
+        }
+
+        const atTop = activeStep.scrollTop <= 0;
+        const atBottom = activeStep.scrollTop + activeStep.clientHeight >= activeStep.scrollHeight - 1;
+        const pullingDown = diffY > 0;
+        const pullingUp = diffY < 0;
+
+        // Chrome Android の pull-to-refresh、iOS系ブラウザのバウンスを抑止。
+        if ((atTop && pullingDown) || (atBottom && pullingUp)) {
+          event.preventDefault();
+        }
+      }, { passive: false });
+    }
+
     window.addEventListener('error', function(event) {
       console.error(event.error || event.message);
       showFatalAuthError('画面初期化エラー: ' + (event.message || '不明なエラー'));
@@ -2432,6 +2598,9 @@
 
     window.addEventListener('DOMContentLoaded', function() {
       try {
+        installPullToRefreshGuard_();
+        installBeforeUnloadGuard_();
+
         // 初期表示ではGAS通信を待たない。
         // モバイル社内回線でGAS応答読取が遅延しても、画面操作を先に可能にする。
         readAuthToken();
