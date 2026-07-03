@@ -4,8 +4,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
 <title>スマホハンディ</title>
-  <!-- build: batch-ack-history-local-first-v1 -->
-  <script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=_fEY3IFABHnJd17YyyPT1UPQ96Cm64do-RgX7nqCHMaC41oEwX3uW4hwZdDYmW7lA4zB7zOSOSHm-l-DrvwLSeyX1cFbNsgfvcheUrIHeHeq08o2LyEw-h9wtnZ8SC48zcviUGvAY8LVnBVYre5sHLBW0nbbgrjWBBr7EFpQe37Qmlb0yTvz__RkyHnvd6snYSgg6DRedoLVJDx1TPux8G__xedAGCWGwKgWwb0ihk8ml1IHeQS3tpRdSsb_LTVkEtOAXaf6S3PEXReZ28yozvqPJn4SnVpKEBoZUILGbVnZqmJSJh_rYyXEFbn8IoHv4MKcQBrvWSyKyShWP3HSSstxw1UOilbyNvgMdw-TYlU" charset="UTF-8"></script><style>
+  <!-- build: local-first-lazy-zxing-v1 -->
+  <script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=ugfNblWriUNlDWDipnfvBC9OIF-X2dNT-Fia6ot7E2B9IlU712RaTAUHqkVQxFlMu37ntD44SfWZrOnAATHYt712pxT5ONTKnBZal7lQB1xI3LzeDtlzZbKdPHmuwzf48yXG3NWjPoN2K4TOvHqSdErNWQK1TMAg9mBLJzat_kJPZVTzqi9BaQZZ-_Sn5u15zmVvdR1pCYce52ix4oQDvkcYtLrqsfmj4HErWa5FIUGqDTkIB8eqOrQK35xRjGfXU84qAgO_sOFYdH_1SjbKrKKDETRTWzWe-RGOpYtYNyYbqxyJIW9kxzbtoAnlQPKpHNrC4CjRrN6vqKbuRzmrtA" charset="UTF-8"></script><style>
     :root {
       --app-max-width: 520px;
       --page-gap: 8px;
@@ -2419,6 +2419,16 @@
         : String(event.reason);
       showFatalAuthError('通信または初期化エラー: ' + message);
     });
+
+
+    const handyBootWatchdog = setTimeout(function() {
+      const boot = document.getElementById('boot-status');
+      if (boot && !boot.textContent) {
+        boot.textContent = '起動確認中... 画面が操作できない場合はChromeのサイトデータを削除してください。';
+        boot.style.color = '#b31412';
+        boot.style.fontWeight = 'bold';
+      }
+    }, 8000);
 
     window.addEventListener('DOMContentLoaded', function() {
       try {
