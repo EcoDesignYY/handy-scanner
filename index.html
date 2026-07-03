@@ -4,8 +4,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
 <title>スマホハンディ</title>
-  <!-- build: batch-ack-history-fast-bootstrap-v1 -->
-  <script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=vjb5tgnk2tFVRSaKQW2t7YniQf98l1204lEnbMgAdvfuLbv-3qwANT5-006a1r3r9ZHqWJ_grby9uC0-utPGIOoeGlC2n6cd96S-9xWcLSgnQZ-b7jyZHCuKtlkTJn_YNePljk6p9pKwFE1_5BWq05XV17r0pe2VRnknNoG2EDkjZiMCoZAqo5ATmryeHPtS5U9XerUuZu4xXtZGXYDRr8OdJadM4hpMKWuIgewJ4ABbYXC7qMotEDO5yYg7k1h-THb16HMjN5OfyPbXBw-qCqgdRhOHxie5w5r_-3uW3QZDlClPec5lzdGKqMvQA6GZCOE35__EsFrqKY4WalYdtLL2OISiTtVtJKP0A7B0fAw" charset="UTF-8"></script><style>
+  <!-- build: batch-ack-history-local-first-v1 -->
+  <script type="text/javascript" src="https://gc.kis.v2.scr.kaspersky-labs.com/FD126C42-EBFA-4E12-B309-BB3FDD723AC1/main.js?attr=_fEY3IFABHnJd17YyyPT1UPQ96Cm64do-RgX7nqCHMaC41oEwX3uW4hwZdDYmW7lA4zB7zOSOSHm-l-DrvwLSeyX1cFbNsgfvcheUrIHeHeq08o2LyEw-h9wtnZ8SC48zcviUGvAY8LVnBVYre5sHLBW0nbbgrjWBBr7EFpQe37Qmlb0yTvz__RkyHnvd6snYSgg6DRedoLVJDx1TPux8G__xedAGCWGwKgWwb0ihk8ml1IHeQS3tpRdSsb_LTVkEtOAXaf6S3PEXReZ28yozvqPJn4SnVpKEBoZUILGbVnZqmJSJh_rYyXEFbn8IoHv4MKcQBrvWSyKyShWP3HSSstxw1UOilbyNvgMdw-TYlU" charset="UTF-8"></script><style>
     :root {
       --app-max-width: 520px;
       --page-gap: 8px;
@@ -677,6 +677,7 @@
 <body>
 
   <h1>スマホハンディ</h1>
+  <div id="boot-status" style="font-size:12px; color:#666; text-align:center; margin:-8px 0 8px 0;"></div>
 
   <div id="step1" class="step-container active">
     <h2>JOB NO. はありますか？</h2>
@@ -1389,7 +1390,7 @@
 
       if (apiQueue.length > 0) {
         // 初期表示を優先する。未送信データの再送は画面表示後に開始する。
-        setTimeout(processQueue, 2000);
+        setTimeout(processQueue, 5000);
       }
     }
 
@@ -2365,6 +2366,52 @@
       showFatalAuthError('画面初期化エラー: ' + (event.message || '不明なエラー'));
     });
 
+
+    function setBootStatus(message, isError) {
+      const el = document.getElementById('boot-status');
+      if (!el) return;
+
+      el.textContent = message || '';
+      el.style.color = isError ? '#b31412' : '#666';
+      el.style.fontWeight = isError ? 'bold' : 'normal';
+    }
+
+    function applyLoginUserFromTokenFallback_() {
+      const payload = getTokenPayload_();
+      const fallbackName = payload && payload.name ? String(payload.name) : '';
+      const fallbackEmail = payload && payload.email ? String(payload.email) : '';
+
+      if (!loginUserName) {
+        loginUserName = fallbackName || fallbackEmail || '認証ユーザー';
+      }
+
+      sessionData.person = loginUserName;
+
+      const personSelect = document.getElementById('input-person');
+      if (personSelect) {
+        personSelect.innerHTML = '';
+        const option = document.createElement('option');
+        option.value = loginUserName;
+        option.textContent = loginUserName;
+        personSelect.appendChild(option);
+        personSelect.value = loginUserName;
+      }
+    }
+
+    function loadBootstrapInBackground_() {
+      setBootStatus('ユーザー情報を確認中...');
+
+      bootstrapApp()
+        .then(function() {
+          setBootStatus('');
+        })
+        .catch(function(error) {
+          console.error('bootstrap background error:', error);
+          // 初期表示は止めない。担当者はtoken内の値で継続する。
+          setBootStatus('ユーザー情報の取得が遅延しています。認証ユーザーで続行できます。', true);
+        });
+    }
+
     window.addEventListener('unhandledrejection', function(event) {
       console.error(event.reason);
       const message = event.reason && event.reason.message
@@ -2373,11 +2420,16 @@
       showFatalAuthError('通信または初期化エラー: ' + message);
     });
 
-    window.addEventListener('DOMContentLoaded', async function() {
+    window.addEventListener('DOMContentLoaded', function() {
       try {
+        // 初期表示ではGAS通信を待たない。
+        // モバイル社内回線でGAS応答読取が遅延しても、画面操作を先に可能にする。
         readAuthToken();
-        await bootstrapApp();
+        applyLoginUserFromTokenFallback_();
         initQueue();
+
+        setTimeout(loadBootstrapInBackground_, 100);
+
       } catch (error) {
         console.error(error);
         showFatalAuthError(error.message);
