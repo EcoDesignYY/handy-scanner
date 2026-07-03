@@ -2842,9 +2842,6 @@
         } catch (bootstrapError) {
           bootstrapTimedOut = true;
           console.error('bootstrap startup error:', bootstrapError);
-
-          // bootstrap失敗でもtoken内ユーザーで続行する。
-          // 現場作業を止めないため、担当者selectには fallback user を残す。
           setBootStatus('ユーザー情報の取得に失敗しました。認証ユーザーで続行中。', true);
 
           setTimeout(function() {
