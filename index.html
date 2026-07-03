@@ -4,7 +4,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
 <title>スマホハンディ</title>
-  <!-- build: batch-send-history-by-date-v1 -->
+  <!-- build: no-pull-guard-v1 -->
+  <script src="./vendor/zxing.min.js?v=sync-zxing-1"></script>
   <style>
     :root {
       --app-max-width: 520px;
@@ -85,8 +86,6 @@
       overflow-y: auto;
       overflow-x: hidden;
       -webkit-overflow-scrolling: touch;
-      overscroll-behavior: contain;
-      overscroll-behavior-y: contain;
     }
 
     .step-container.active {
@@ -2726,53 +2725,7 @@
         }
       });
     }
-
-    function installPullToRefreshGuard_() {
-      let startY = 0;
-      let startX = 0;
-
-      document.addEventListener('touchstart', function(event) {
-        if (!event.touches || event.touches.length !== 1) {
-          return;
-        }
-
-        startY = event.touches[0].clientY;
-        startX = event.touches[0].clientX;
-      }, { passive: true });
-
-      document.addEventListener('touchmove', function(event) {
-        if (!event.touches || event.touches.length !== 1) {
-          return;
-        }
-
-        const currentY = event.touches[0].clientY;
-        const currentX = event.touches[0].clientX;
-        const diffY = currentY - startY;
-        const diffX = currentX - startX;
-
-        // 横方向操作は阻害しない。
-        if (Math.abs(diffX) > Math.abs(diffY)) {
-          return;
-        }
-
-        const activeStep = document.querySelector('.step-container.active');
-        if (!activeStep) {
-          return;
-        }
-
-        const atTop = activeStep.scrollTop <= 0;
-        const atBottom = activeStep.scrollTop + activeStep.clientHeight >= activeStep.scrollHeight - 1;
-        const pullingDown = diffY > 0;
-        const pullingUp = diffY < 0;
-
-        // Chrome Android の pull-to-refresh、iOS系ブラウザのバウンスを抑止。
-        if ((atTop && pullingDown) || (atBottom && pullingUp)) {
-          event.preventDefault();
-        }
-      }, { passive: false });
-    }
-
-    window.addEventListener('error', function(event) {
+    window.addEventListener('error' , function(event) {
       console.error(event.error || event.message);
       showFatalAuthError('画面初期化エラー: ' + (event.message || '不明なエラー'));
     });
@@ -2858,7 +2811,6 @@
 
     window.addEventListener('DOMContentLoaded', async function() {
       try {
-        installPullToRefreshGuard_();
         installBeforeUnloadGuard_();
 
         readAuthToken();
