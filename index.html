@@ -4,8 +4,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
 <title>スマホハンディ</title>
-  <!-- build: pick-list-button-label-v1 -->
-  <script src="./vendor/zxing.min.js?v=sync-zxing-1"></script>
+  <!-- build: checkbatch-retry-strong-v1 -->
   <style>
     :root {
       --app-max-width: 520px;
@@ -930,8 +929,10 @@
     const STORAGE_KEY = 'handy_pending_picks_v2';
     const PICK_HISTORY_KEY = 'handy_pick_history_v2';
     const MAX_BATCH_ITEMS = 10;
-    const ACK_RETRY_COUNT = 6;
-    const ACK_RETRY_INTERVAL_MS = 1200;
+    // 社内Wi-Fiの弱さ・プロキシ遅延対策。
+    // submit後のcheckBatch確認は、届いているのに確認だけ遅れるケースがあるため長めに粘る。
+    const ACK_RETRY_DELAYS_MS = [1500, 3000, 5000, 8000, 12000, 16000, 20000, 25000];
+    const ACK_CHECK_TIMEOUT_MS = 20000;
 
     let apiQueue = [];
     let isApiProcessing = false;
@@ -1525,43 +1526,86 @@
       });
     }
 
-    function checkBatchReceived(batchId, pickIds) {
+    function checkBatchReceived(batchId, pickIds, timeoutMs) {
       const url = API_URL +
         '?action=checkBatch' +
         '&batchId=' + encodeURIComponent(batchId) +
         '&ids=' + encodeURIComponent(pickIds.join(',')) +
         '&token=' + encodeURIComponent(authToken);
 
-      return jsonpRequest(url, 10000);
+      return jsonpRequest(url, timeoutMs || ACK_CHECK_TIMEOUT_MS);
+    }
+
+    function sleep_(ms) {
+      return new Promise(function(resolve) {
+        setTimeout(resolve, ms);
+      });
+    }
+
+    function getReceivedCountFromAck_(result) {
+      if (!result || result.status !== 'OK') {
+        return 0;
+      }
+
+      const received = Array.isArray(result.receivedPickIds)
+        ? result.receivedPickIds
+        : [];
+
+      const registered = Array.isArray(result.registeredPickIds)
+        ? result.registeredPickIds
+        : [];
+
+      const errors = Array.isArray(result.errorPickIds)
+        ? result.errorPickIds
+        : [];
+
+      const map = {};
+      received.concat(registered).concat(errors).forEach(function(id) {
+        if (id) map[id] = true;
+      });
+
+      return Object.keys(map).length;
     }
 
     async function waitForBatchAck(batchId, pickIds) {
       let lastResult = null;
+      let lastErrorMessage = '';
 
-      for (let i = 0; i < ACK_RETRY_COUNT; i++) {
+      for (let i = 0; i < ACK_RETRY_DELAYS_MS.length; i++) {
+        const attempt = i + 1;
+
         try {
-          lastResult = await checkBatchReceived(batchId, pickIds);
+          lastResult = await checkBatchReceived(batchId, pickIds, ACK_CHECK_TIMEOUT_MS);
 
           if (lastResult && lastResult.status === 'OK') {
-            const received = Array.isArray(lastResult.receivedPickIds)
-              ? lastResult.receivedPickIds
-              : [];
+            const receivedCount = getReceivedCountFromAck_(lastResult);
 
-            if (received.length > 0) {
+            if (receivedCount > 0) {
               return lastResult;
             }
+
+            lastErrorMessage = 'GAS受信確認待ちです。attempt=' + attempt;
+          } else {
+            lastErrorMessage = lastResult && lastResult.message
+              ? lastResult.message
+              : 'GAS受信確認の応答が不正です。attempt=' + attempt;
           }
 
         } catch (error) {
-          lastResult = { status: 'ERROR', message: error.message };
+          lastErrorMessage = (error && error.message ? error.message : String(error)) + ' attempt=' + attempt;
+          lastResult = { status: 'ERROR', message: lastErrorMessage };
         }
 
-        await new Promise(function(resolve) {
-          setTimeout(resolve, ACK_RETRY_INTERVAL_MS);
-        });
+        if (i < ACK_RETRY_DELAYS_MS.length - 1) {
+          await sleep_(ACK_RETRY_DELAYS_MS[i]);
+        }
       }
 
-      throw new Error(lastResult && lastResult.message ? lastResult.message : 'GAS受信確認が取れませんでした。');
+      throw new Error(
+        lastErrorMessage ||
+        (lastResult && lastResult.message) ||
+        'GAS受信確認が取れませんでした。'
+      );
     }
 
     function getTokenPayload_() {
@@ -1855,10 +1899,18 @@
         processQueue();
 
       } catch (error) {
+        const errorMessage = error && error.message ? error.message : String(error);
+        const isAckError =
+          errorMessage.indexOf('GAS受信確認') !== -1 ||
+          errorMessage.indexOf('確認API') !== -1 ||
+          errorMessage.indexOf('受信確認待ち') !== -1;
+
         batchItems.forEach(function(pick) {
           pick.status = 'ERROR';
           pick.retryCount = Number(pick.retryCount || 0) + 1;
-          pick.lastError = error.message || String(error);
+          pick.lastError = isAckError
+            ? '受信確認待ち: ' + errorMessage
+            : errorMessage;
           pick.lastErrorAt = new Date().toISOString();
 
           updatePickHistoryStatus(pick.pickId, 'ERROR', {
@@ -1867,7 +1919,7 @@
             lastErrorAt: pick.lastErrorAt
           });
 
-          updateHistoryStatus(pick.pickId, 'error', '再送待機中');
+          updateHistoryStatus(pick.pickId, 'error', isAckError ? '受信確認待ち' : '再送待機中');
         });
 
         isApiProcessing = false;
@@ -1879,7 +1931,11 @@
           return Number(pick.retryCount || 1);
         }));
 
-        const waitMs = Math.min(30000, 3000 + retryCount * 2000);
+        // 社内Wi-Fi対策: checkBatch失敗時は少し長めに待ってから再確認/再送する。
+        const waitMs = isAckError
+          ? Math.min(90000, 10000 + retryCount * 10000)
+          : Math.min(30000, 3000 + retryCount * 2000);
+
         setTimeout(processQueue, waitMs);
       }
     }
