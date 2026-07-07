@@ -4,7 +4,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
 <title>スマホハンディ</title>
-  <!-- build: checkbatch-retry-strong-v1 -->
+  <!-- build: error-history-local-delete-v1 -->
   <style>
     :root {
       --app-max-width: 520px;
@@ -695,6 +695,19 @@
       font-weight: 700;
     }
 
+    .history-delete-btn {
+      background: #fce8e6;
+      color: #b31412;
+      border: 1px solid #f5c2c7;
+      font-size: 13px;
+      min-height: 34px;
+      padding: 6px 10px;
+      margin: 8px 0 0;
+      font-weight: 700;
+      border-radius: 8px;
+      width: auto;
+    }
+
     .pick-history-toolbar {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -929,10 +942,11 @@
     const STORAGE_KEY = 'handy_pending_picks_v2';
     const PICK_HISTORY_KEY = 'handy_pick_history_v2';
     const MAX_BATCH_ITEMS = 10;
-    // 社内Wi-Fiの弱さ・プロキシ遅延対策。
-    // submit後のcheckBatch確認は、届いているのに確認だけ遅れるケースがあるため長めに粘る。
-    const ACK_RETRY_DELAYS_MS = [1500, 3000, 5000, 8000, 12000, 16000, 20000, 25000];
-    const ACK_CHECK_TIMEOUT_MS = 20000;
+    // checkBatch再確認リトライ設定。
+    // 自宅Wi-Fiで正常動作する範囲に抑えつつ、弱いWi-Fiでの確認遅延に少し粘る。
+    const ACK_RETRY_COUNT = 5;
+    const ACK_RETRY_INTERVAL_MS = 2000;
+    const ACK_CHECK_TIMEOUT_MS = 12000;
 
     let apiQueue = [];
     let isApiProcessing = false;
@@ -1246,6 +1260,77 @@
     }
 
 
+    function removePickFromLocalStorage_(pickId) {
+      const id = String(pickId || '').trim();
+
+      if (!id) {
+        return false;
+      }
+
+      const beforeQueue = apiQueue.length;
+      apiQueue = apiQueue.filter(function(pick) {
+        return String(pick.pickId || pick.id || '').trim() !== id;
+      });
+
+      const rows = loadPickHistory();
+      const beforeHistory = rows.length;
+      const nextRows = rows.filter(function(row) {
+        return String(row.pickId || '').trim() !== id;
+      });
+
+      if (nextRows.length !== beforeHistory) {
+        savePickHistory(nextRows);
+      }
+
+      if (apiQueue.length !== beforeQueue) {
+        saveQueueToStorage();
+      } else {
+        updateQueueUI();
+      }
+
+      renderPickHistory();
+      refreshVisibleScanHistoryStatuses_();
+
+      return apiQueue.length !== beforeQueue || nextRows.length !== beforeHistory;
+    }
+
+    function deleteErrorPickFromHistory(pickId) {
+      const id = String(pickId || '').trim();
+
+      if (!id) {
+        return;
+      }
+
+      const queued = apiQueue.find(function(pick) {
+        return String(pick.pickId || pick.id || '').trim() === id;
+      });
+
+      const historyRows = loadPickHistory();
+      const historyRow = historyRows.find(function(row) {
+        return String(row.pickId || '').trim() === id;
+      });
+
+      const status = queued
+        ? String(queued.status || '')
+        : String(historyRow && historyRow.status || '');
+
+      if (status !== 'ERROR') {
+        alert('削除できるのはエラー状態の履歴だけです。');
+        return;
+      }
+
+      if (!confirm('このエラー履歴と端末内未送信データをlocalStorageから削除します。\nサーバーへは送信されません。よろしいですか？')) {
+        return;
+      }
+
+      const removed = removePickFromLocalStorage_(id);
+
+      if (!removed) {
+        alert('削除対象が見つかりませんでした。');
+      }
+    }
+
+
     function getHistoryStatusMap_() {
       const rows = loadPickHistory();
       const map = {};
@@ -1474,6 +1559,10 @@
 
         lastDateKey = dateKey;
 
+        const errorDeleteButton = status === 'ERROR'
+          ? '<button type="button" class="history-delete-btn" onclick="deleteErrorPickFromHistory(\'' + escapeHtmlClient(row.pickId || '') + '\')">このエラーを削除</button>'
+          : '';
+
         return `
           ${headingHtml}
           <div class="pick-history-row">
@@ -1491,6 +1580,7 @@
               ${row.batchId ? ' / batch: ' + escapeHtmlClient(row.batchId) : ''}
             </div>
             ${row.lastError ? '<div class="pick-history-sub pick-status-error">最終エラー: ' + escapeHtmlClient(row.lastError) + '</div>' : ''}
+            ${errorDeleteButton}
           </div>
         `;
       }).join('');
@@ -1526,14 +1616,14 @@
       });
     }
 
-    function checkBatchReceived(batchId, pickIds, timeoutMs) {
+    function checkBatchReceived(batchId, pickIds) {
       const url = API_URL +
         '?action=checkBatch' +
         '&batchId=' + encodeURIComponent(batchId) +
         '&ids=' + encodeURIComponent(pickIds.join(',')) +
         '&token=' + encodeURIComponent(authToken);
 
-      return jsonpRequest(url, timeoutMs || ACK_CHECK_TIMEOUT_MS);
+      return jsonpRequest(url, ACK_CHECK_TIMEOUT_MS);
     }
 
     function sleep_(ms) {
@@ -1542,70 +1632,55 @@
       });
     }
 
-    function getReceivedCountFromAck_(result) {
+    function getAckMatchedIds_(result) {
       if (!result || result.status !== 'OK') {
-        return 0;
+        return [];
       }
 
-      const received = Array.isArray(result.receivedPickIds)
-        ? result.receivedPickIds
-        : [];
-
-      const registered = Array.isArray(result.registeredPickIds)
-        ? result.registeredPickIds
-        : [];
-
-      const errors = Array.isArray(result.errorPickIds)
-        ? result.errorPickIds
-        : [];
-
       const map = {};
-      received.concat(registered).concat(errors).forEach(function(id) {
-        if (id) map[id] = true;
+
+      [result.receivedPickIds, result.registeredPickIds, result.errorPickIds].forEach(function(list) {
+        if (!Array.isArray(list)) return;
+
+        list.forEach(function(id) {
+          if (id) map[id] = true;
+        });
       });
 
-      return Object.keys(map).length;
+      return Object.keys(map);
     }
 
     async function waitForBatchAck(batchId, pickIds) {
-      let lastResult = null;
-      let lastErrorMessage = '';
+      let lastMessage = '';
 
-      for (let i = 0; i < ACK_RETRY_DELAYS_MS.length; i++) {
-        const attempt = i + 1;
-
+      for (let i = 0; i < ACK_RETRY_COUNT; i++) {
         try {
-          lastResult = await checkBatchReceived(batchId, pickIds, ACK_CHECK_TIMEOUT_MS);
+          const result = await checkBatchReceived(batchId, pickIds);
 
-          if (lastResult && lastResult.status === 'OK') {
-            const receivedCount = getReceivedCountFromAck_(lastResult);
+          if (result && result.status === 'OK') {
+            const matchedIds = getAckMatchedIds_(result);
 
-            if (receivedCount > 0) {
-              return lastResult;
+            if (matchedIds.length > 0) {
+              return result;
             }
 
-            lastErrorMessage = 'GAS受信確認待ちです。attempt=' + attempt;
+            lastMessage = 'GAS受信確認待ちです。';
           } else {
-            lastErrorMessage = lastResult && lastResult.message
-              ? lastResult.message
-              : 'GAS受信確認の応答が不正です。attempt=' + attempt;
+            lastMessage = result && result.message
+              ? result.message
+              : 'GAS受信確認の応答が不正です。';
           }
 
         } catch (error) {
-          lastErrorMessage = (error && error.message ? error.message : String(error)) + ' attempt=' + attempt;
-          lastResult = { status: 'ERROR', message: lastErrorMessage };
+          lastMessage = error && error.message ? error.message : String(error);
         }
 
-        if (i < ACK_RETRY_DELAYS_MS.length - 1) {
-          await sleep_(ACK_RETRY_DELAYS_MS[i]);
+        if (i < ACK_RETRY_COUNT - 1) {
+          await sleep_(ACK_RETRY_INTERVAL_MS);
         }
       }
 
-      throw new Error(
-        lastErrorMessage ||
-        (lastResult && lastResult.message) ||
-        'GAS受信確認が取れませんでした。'
-      );
+      throw new Error(lastMessage || 'GAS受信確認が取れませんでした。');
     }
 
     function getTokenPayload_() {
@@ -1744,10 +1819,36 @@
       refreshVisibleScanHistoryStatuses_();
     }
 
+    function canAutoRetryErrorPick_(pick) {
+      const retryCount = Number(pick.retryCount || 0);
+
+      // 古いERRORが詰まりになって以降の新規PENDINGを止めない。
+      // ERRORは最大2回まで自動再試行し、それ以降は手動再送に回す。
+      if (retryCount >= 2) {
+        return false;
+      }
+
+      const lastErrorAt = pick.lastErrorAt ? Date.parse(pick.lastErrorAt) : 0;
+
+      if (!lastErrorAt) {
+        return true;
+      }
+
+      return Date.now() - lastErrorAt >= 30000;
+    }
+
     function getNextBatch() {
-      const candidates = apiQueue.filter(function(pick) {
-        return pick.status === 'PENDING' || pick.status === 'ERROR';
+      // 新規ピックデータを最優先で送る。
+      // 古いERRORはPENDINGが無い場合だけ再試行する。
+      let candidates = apiQueue.filter(function(pick) {
+        return pick.status === 'PENDING';
       });
+
+      if (candidates.length === 0) {
+        candidates = apiQueue.filter(function(pick) {
+          return pick.status === 'ERROR' && canAutoRetryErrorPick_(pick);
+        });
+      }
 
       if (candidates.length === 0) {
         return [];
@@ -1760,6 +1861,32 @@
           return queueContextKey(pick) === key;
         })
         .slice(0, MAX_BATCH_ITEMS);
+    }
+
+    function retryAllErrorPicksNow() {
+      let changed = false;
+
+      apiQueue.forEach(function(pick) {
+        if (pick.status === 'ERROR') {
+          pick.status = 'PENDING';
+          pick.retryCount = 0;
+          pick.lastError = '';
+          pick.lastErrorAt = '';
+          changed = true;
+
+          updatePickHistoryStatus(pick.pickId, 'PENDING', {
+            lastError: '',
+            lastErrorAt: ''
+          });
+        }
+      });
+
+      if (changed) {
+        saveQueueToStorage();
+        processQueue();
+      } else {
+        updateQueueUI();
+      }
     }
 
     async function processQueue() {
@@ -1908,9 +2035,7 @@
         batchItems.forEach(function(pick) {
           pick.status = 'ERROR';
           pick.retryCount = Number(pick.retryCount || 0) + 1;
-          pick.lastError = isAckError
-            ? '受信確認待ち: ' + errorMessage
-            : errorMessage;
+          pick.lastError = isAckError ? '受信確認待ち: ' + errorMessage : errorMessage;
           pick.lastErrorAt = new Date().toISOString();
 
           updatePickHistoryStatus(pick.pickId, 'ERROR', {
@@ -1931,11 +2056,8 @@
           return Number(pick.retryCount || 1);
         }));
 
-        // 社内Wi-Fi対策: checkBatch失敗時は少し長めに待ってから再確認/再送する。
-        const waitMs = isAckError
-          ? Math.min(90000, 10000 + retryCount * 10000)
-          : Math.min(30000, 3000 + retryCount * 2000);
-
+        // 長すぎる自動待機は通常環境でも送信不能に見えるため最大30秒に抑える。
+        const waitMs = Math.min(30000, 3000 + retryCount * 2000);
         setTimeout(processQueue, waitMs);
       }
     }
