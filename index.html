@@ -4,7 +4,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
 <title>スマホハンディ</title>
-  <!-- build: error-history-local-delete-v1 -->
+  <!-- build: camera-vs-manual-debug-v1 -->
+  <script src="./vendor/zxing.min.js?v=sync-zxing-1"></script>
   <style>
     :root {
       --app-max-width: 520px;
@@ -735,7 +736,36 @@
       font-size: 13px;
       border: 1px solid #d2e3fc;
     }
-  </style>
+  
+    .debug-log-box {
+      background: #202124;
+      color: #e8eaed;
+      border-radius: 10px;
+      padding: 10px;
+      margin-top: 10px;
+      max-height: 260px;
+      overflow: auto;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .debug-log-btn {
+      background: #f1f3f4;
+      color: #202124;
+      border: 1px solid #dadce0;
+      font-size: 13px;
+      min-height: 36px;
+      padding: 7px 10px;
+      margin: 4px 4px 4px 0;
+      font-weight: 700;
+      border-radius: 8px;
+      width: auto;
+    }
+
+</style>
 </head>
 <body>
 
@@ -897,6 +927,12 @@
         <button type="button" style="width:90px; min-height:40px; padding:6px; margin:0; font-size:13px;" onclick="setPickHistoryToday()">今日</button>
       </div>
       <div id="pick-history-summary" style="font-size:13px; margin-bottom:8px; color:#555;"></div>
+      <div style="margin:8px 0;">
+        <button type="button" class="debug-log-btn" onclick="renderDebugLogs()">検証ログを表示</button>
+        <button type="button" class="debug-log-btn" onclick="copyDebugLogs()">検証ログをコピー</button>
+        <button type="button" class="debug-log-btn" onclick="clearDebugLogs()">検証ログを削除</button>
+      </div>
+      <div id="debug-log-box" class="debug-log-box" style="display:none;"></div>
       <div id="pick-history-list" style="max-height:55dvh; overflow:auto; border:1px solid #ddd; border-radius:8px; padding:8px; background:#fafafa;"></div>
       <div class="modal-buttons" style="margin-top:10px;">
         <button type="button" class="secondary" onclick="closePickHistory()">閉じる</button>
@@ -941,6 +977,8 @@
 
     const STORAGE_KEY = 'handy_pending_picks_v2';
     const PICK_HISTORY_KEY = 'handy_pick_history_v2';
+    const DEBUG_LOG_KEY = 'handy_debug_logs_v1';
+    const MAX_DEBUG_LOGS = 300;
     const MAX_BATCH_ITEMS = 10;
     // checkBatch再確認リトライ設定。
     // 自宅Wi-Fiで正常動作する範囲に抑えつつ、弱いWi-Fiでの確認遅延に少し粘る。
@@ -1222,6 +1260,114 @@
       localStorage.setItem(PICK_HISTORY_KEY, JSON.stringify(trimmed));
     }
 
+
+    function safeDebugPayload_(payload) {
+      try {
+        const copy = JSON.parse(JSON.stringify(payload || {}));
+
+        if (copy.token) {
+          copy.token = '[masked]';
+        }
+
+        if (copy.authToken) {
+          copy.authToken = '[masked]';
+        }
+
+        return copy;
+      } catch (error) {
+        return { value: String(payload) };
+      }
+    }
+
+    function addDebugLog(eventName, payload) {
+      try {
+        const rows = JSON.parse(localStorage.getItem(DEBUG_LOG_KEY) || '[]');
+        const entry = {
+          at: new Date().toLocaleString('ja-JP'),
+          event: eventName,
+          online: navigator.onLine,
+          payload: safeDebugPayload_(payload || {})
+        };
+
+        rows.push(entry);
+
+        while (rows.length > MAX_DEBUG_LOGS) {
+          rows.shift();
+        }
+
+        localStorage.setItem(DEBUG_LOG_KEY, JSON.stringify(rows));
+
+        const box = document.getElementById('debug-log-box');
+
+        if (box && box.style.display !== 'none') {
+          renderDebugLogs();
+        }
+      } catch (error) {
+        console.warn('debug log write failed', error);
+      }
+    }
+
+    function getDebugLogsText_() {
+      let rows = [];
+
+      try {
+        rows = JSON.parse(localStorage.getItem(DEBUG_LOG_KEY) || '[]');
+      } catch (error) {
+        rows = [];
+      }
+
+      if (rows.length === 0) {
+        return '検証ログはありません。';
+      }
+
+      return rows.map(function(row, index) {
+        return [
+          '[' + (index + 1) + '] ' + (row.at || ''),
+          'event=' + (row.event || ''),
+          'online=' + String(row.online),
+          'payload=' + JSON.stringify(row.payload || {})
+        ].join('\n');
+      }).join('\n\n');
+    }
+
+    function renderDebugLogs() {
+      const box = document.getElementById('debug-log-box');
+
+      if (!box) {
+        return;
+      }
+
+      box.style.display = 'block';
+      box.textContent = getDebugLogsText_();
+    }
+
+    function copyDebugLogs() {
+      const text = getDebugLogsText_();
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text)
+          .then(function() {
+            alert('検証ログをコピーしました。');
+          })
+          .catch(function() {
+            prompt('コピーできない場合は、以下を手動でコピーしてください。', text);
+          });
+        return;
+      }
+
+      prompt('以下をコピーしてください。', text);
+    }
+
+    function clearDebugLogs() {
+      if (!confirm('検証ログをlocalStorageから削除します。よろしいですか？')) {
+        return;
+      }
+
+      localStorage.removeItem(DEBUG_LOG_KEY);
+      renderDebugLogs();
+    }
+
+
     function upsertPickHistory(pick) {
       const rows = loadPickHistory();
       const index = rows.findIndex(function(row) {
@@ -1295,6 +1441,10 @@
     }
 
     function deleteErrorPickFromHistory(pickId) {
+      addDebugLog('deleteErrorPick:click', {
+        pickId: pickId
+      });
+
       const id = String(pickId || '').trim();
 
       if (!id) {
@@ -1617,6 +1767,12 @@
     }
 
     function checkBatchReceived(batchId, pickIds) {
+      addDebugLog('checkBatch:request', {
+        batchId: batchId,
+        pickIds: pickIds,
+        timeoutMs: ACK_CHECK_TIMEOUT_MS || 10000
+      });
+
       const url = API_URL +
         '?action=checkBatch' +
         '&batchId=' + encodeURIComponent(batchId) +
@@ -1655,9 +1811,21 @@
 
       for (let i = 0; i < ACK_RETRY_COUNT; i++) {
         try {
+          addDebugLog('checkBatch:attempt', {
+            batchId: batchId,
+            attempt: i + 1,
+            maxAttempts: ACK_RETRY_COUNT
+          });
+
           const result = await checkBatchReceived(batchId, pickIds);
 
           if (result && result.status === 'OK') {
+            addDebugLog('checkBatch:response', {
+              batchId: batchId,
+              attempt: i + 1,
+              result: result
+            });
+
             const matchedIds = getAckMatchedIds_(result);
 
             if (matchedIds.length > 0) {
@@ -1673,6 +1841,11 @@
 
         } catch (error) {
           lastMessage = error && error.message ? error.message : String(error);
+          addDebugLog('checkBatch:attempt-error', {
+            batchId: batchId,
+            attempt: i + 1,
+            message: lastMessage
+          });
         }
 
         if (i < ACK_RETRY_COUNT - 1) {
@@ -1864,6 +2037,10 @@
     }
 
     function retryAllErrorPicksNow() {
+      addDebugLog('manualRetryErrors:start', {
+        errorCount: apiQueue.filter(function(pick) { return pick.status === 'ERROR'; }).length
+      });
+
       let changed = false;
 
       apiQueue.forEach(function(pick) {
@@ -1890,6 +2067,12 @@
     }
 
     async function processQueue() {
+      addDebugLog('processQueue:start', {
+        queueLength: apiQueue.length,
+        isApiProcessing: isApiProcessing,
+        online: navigator.onLine
+      });
+
       if (isApiProcessing) {
         updateQueueUI();
         return;
@@ -1956,6 +2139,15 @@
       };
 
       try {
+        addDebugLog('submit:start', {
+          batchId: batchId,
+          pickIds: batchItems.map(function(pick) { return pick.pickId; }),
+          itemCount: batchItems.length,
+          purposeName: payload.purposeName,
+          jobNo: payload.jobNo,
+          apiUrl: API_URL
+        });
+
         await fetch(API_URL, {
           method: 'POST',
           mode: 'no-cors',
@@ -1968,11 +2160,21 @@
           }))
         });
 
+        addDebugLog('submit:fetch-finished', {
+          batchId: batchId,
+          note: 'no-corsのためHTTPステータスは取得不可'
+        });
+
         const pickIds = batchItems.map(function(pick) {
           return pick.pickId;
         });
 
         const ack = await waitForBatchAck(batchId, pickIds);
+        addDebugLog('checkBatch:ack-received', {
+          batchId: batchId,
+          ack: ack
+        });
+
         const receivedIds = Array.isArray(ack.receivedPickIds) ? ack.receivedPickIds : [];
         const registeredIds = Array.isArray(ack.registeredPickIds) ? ack.registeredPickIds : [];
         const errorIds = Array.isArray(ack.errorPickIds) ? ack.errorPickIds : [];
@@ -2026,6 +2228,12 @@
         processQueue();
 
       } catch (error) {
+        addDebugLog('processQueue:error', {
+          batchId: batchId,
+          message: error && error.message ? error.message : String(error),
+          stack: error && error.stack ? error.stack : ''
+        });
+
         const errorMessage = error && error.message ? error.message : String(error);
         const isAckError =
           errorMessage.indexOf('GAS受信確認') !== -1 ||
@@ -2146,6 +2354,13 @@
     }
 
     function powerOffCameraHardware() {
+      addDebugLog('camera:powerOff', {
+        hasStream: !!cameraStream,
+        hasVideoTrack: !!videoTrack,
+        currentStep: currentStep,
+        scanMode: scanMode
+      });
+
       stopScanner();
       if (cameraStream) {
         cameraStream.getTracks().forEach(track => track.stop()); 
@@ -2198,6 +2413,19 @@
     function forceNumeric(inputElem) {
       let val = inputElem.value.replace(/[０-９]/g, function(s) { return String.fromCharCode(s.charCodeAt(0) - 0xFEE0); });
       inputElem.value = val.replace(/[^0-9]/g, '');
+    }
+
+    function normalizeScannedCode_(code) {
+      return String(code || '')
+        .replace(/[０-９]/g, function(s) {
+          return String.fromCharCode(s.charCodeAt(0) - 0xFEE0);
+        })
+        .replace(/[\r\n\t\s]/g, '')
+        .trim();
+    }
+
+    function normalizeItemCode_(code) {
+      return normalizeScannedCode_(code).replace(/[^0-9]/g, '');
     }
 
     function submitManualJobNo() {
@@ -2344,6 +2572,13 @@
     }
 
     function submitData(isFinish) {
+      addDebugLog('submitData:start', {
+        currentItemBarcode: currentItemBarcode,
+        isFinish: isFinish,
+        purposeName: sessionData.purposeName,
+        jobNo: sessionData.jobNo
+      });
+
       if (!navigator.onLine) {
         showOfflineOverlay();
         return;
@@ -2505,7 +2740,8 @@
     let cameraStream = null; let isDecoding = false; let detector = null; let zxingReader = null; let videoTrack = null; let isLightOn = false; let isScanning = false;
 
     const AUTO_ZOOM_ENABLED = true;
-    const DEFAULT_CAMERA_ZOOM = 1.4; 
+    const DEFAULT_CAMERA_ZOOM = 1.4;
+    const ENABLE_CAPTURED_IMAGE = false; 
 
     let zxingLoadPromise = null;
 
@@ -2922,49 +3158,80 @@
     }
 
     function onBarcodeDetected(code, isManual = false) {
+      // 検出後は即デコーダ停止。
+      // カメラ読取時だけ送信できない場合、デコーダ継続・重複検出・端末負荷が通信処理に干渉している可能性がある。
+      stopScanner();
+
       playBeep();
-      
+
+      const rawCode = String(code || '');
+      const normalizedCode = normalizeScannedCode_(rawCode);
+
+      addDebugLog('barcode:detected', {
+        source: isManual ? 'MANUAL' : 'CAMERA',
+        scanMode: scanMode,
+        rawCode: rawCode,
+        normalizedCode: normalizedCode,
+        rawLength: rawCode.length,
+        normalizedLength: normalizedCode.length
+      });
+
       lastScannedCode = "";
       scanMatchCount = 0;
 
       let capturedSrc = "";
-      if (!isManual && scanMode === 'ITEM') capturedSrc = captureVideoFrame('video-item');
-      
+      if (ENABLE_CAPTURED_IMAGE && !isManual && scanMode === 'ITEM') {
+        capturedSrc = captureVideoFrame('video-item');
+      }
+
       if (scanMode === 'JOB') {
-        let finalJobNo = code;
-        
+        let finalJobNo = normalizedCode;
+
         if (!isManual && finalJobNo.length > 4) {
           finalJobNo = finalJobNo.substring(4);
         }
-        
+
         if (confirm("【 JOB NO 確認 】\n\n「 " + finalJobNo + " 」\n\nこのJOB NOでよろしいですか？\n※違う場合はキャンセルを押して読み直してください。")) {
           sessionData.jobNo = finalJobNo; 
           scanMode = null; 
           goToStep(3);
         } else {
-          isScanning = false;
           startCooldown(2); 
           startScanner();
         }
-        
+
       } else if (scanMode === 'ITEM') {
         if (navigator.vibrate) navigator.vibrate(50);
-        
-        if (confirm("【 商品CD 確認 】\n\n「 " + code + " 」\n\nこの商品コードでよろしいですか？\n※違う場合はキャンセルを押して読み直してください。")) {
-          currentItemBarcode = code; 
-          document.getElementById('display-item-code').innerText = code;
+
+        const finalItemCode = normalizeItemCode_(normalizedCode);
+
+        addDebugLog('barcode:item-normalized', {
+          source: isManual ? 'MANUAL' : 'CAMERA',
+          rawCode: rawCode,
+          normalizedCode: normalizedCode,
+          finalItemCode: finalItemCode
+        });
+
+        if (!finalItemCode) {
+          alert('商品CDとして使用できる数字が読み取れませんでした。読み直してください。');
+          startCooldown(4);
+          startScanner();
+          return;
+        }
+
+        if (confirm("【 商品CD 確認 】\n\n「 " + finalItemCode + " 」\n\nこの商品コードでよろしいですか？\n※違う場合はキャンセルを押して読み直してください。")) {
+          currentItemBarcode = finalItemCode; 
+          document.getElementById('display-item-code').innerText = finalItemCode;
           const imgEl = document.getElementById('captured-image');
           if (capturedSrc) { imgEl.src = capturedSrc; imgEl.style.display = 'block'; } else { imgEl.style.display = 'none'; }
           scanMode = null; 
           goToStep(5);
         } else {
-          isScanning = false;
           startCooldown(4); 
           startScanner();
         }
       }
     }
-
 
 
     function installBeforeUnloadGuard_() {
