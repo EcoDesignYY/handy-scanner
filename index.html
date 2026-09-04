@@ -3,9 +3,8 @@
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
   <meta charset="utf-8">
-<title>スマホハンディV2</title>
-  <!-- build: camera-vs-manual-debug-v1 -->
-  <script src="./vendor/zxing.min.js?v=sync-zxing-1"></script>
+<title>スマホハンディ</title>
+  <!-- build: reload-safe-pull-guard-v1 -->
   <style>
     :root {
       --app-max-width: 520px;
@@ -86,6 +85,8 @@
       overflow-y: auto;
       overflow-x: hidden;
       -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+      overscroll-behavior-y: contain;
     }
 
     .step-container.active {
@@ -674,102 +675,11 @@
     .pick-status-received { color: #1a73e8; font-weight: bold; }
     .pick-status-registered { color: #0b8043; font-weight: bold; }
     .pick-status-error { color: #b31412; font-weight: bold; }
-    .inline-history-btn {
-      background: #eef3ff;
-      color: #174ea6;
-      border: 1px solid #c7d7ff;
-      font-size: 15px;
-      min-height: 44px;
-      padding: 10px;
-      margin: 6px 0 10px;
-      font-weight: 700;
-    }
-
-    .inline-send-btn {
-      background: #e6f4ea;
-      color: #137333;
-      border: 1px solid #b7dfc2;
-      font-size: 15px;
-      min-height: 44px;
-      padding: 10px;
-      margin: 6px 0 10px;
-      font-weight: 700;
-    }
-
-    .history-delete-btn {
-      background: #fce8e6;
-      color: #b31412;
-      border: 1px solid #f5c2c7;
-      font-size: 13px;
-      min-height: 34px;
-      padding: 6px 10px;
-      margin: 8px 0 0;
-      font-weight: 700;
-      border-radius: 8px;
-      width: auto;
-    }
-
-    .pick-history-toolbar {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 8px;
-    }
-
-    .pick-history-toolbar select {
-      margin: 0;
-      min-height: 40px;
-      font-size: 14px;
-    }
-
-    .pick-history-date-heading {
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      padding: 7px 8px;
-      margin: 8px 0 4px;
-      border-radius: 6px;
-      background: #e8f0fe;
-      color: #174ea6;
-      font-weight: bold;
-      font-size: 13px;
-      border: 1px solid #d2e3fc;
-    }
-  
-    .debug-log-box {
-      background: #202124;
-      color: #e8eaed;
-      border-radius: 10px;
-      padding: 10px;
-      margin-top: 10px;
-      max-height: 260px;
-      overflow: auto;
-      font-family: Consolas, Monaco, monospace;
-      font-size: 11px;
-      line-height: 1.45;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-
-    .debug-log-btn {
-      background: #f1f3f4;
-      color: #202124;
-      border: 1px solid #dadce0;
-      font-size: 13px;
-      min-height: 36px;
-      padding: 7px 10px;
-      margin: 4px 4px 4px 0;
-      font-weight: 700;
-      border-radius: 8px;
-      width: auto;
-    }
-
-</style>
+  </style>
 </head>
 <body>
 
-  <h1>スマホハンディV2</h1>
+  <h1>スマホハンディ</h1>
   <div id="boot-status" style="font-size:12px; color:#666; text-align:center; margin:-8px 0 8px 0;"></div>
 
   <div id="step1" class="step-container active">
@@ -777,7 +687,6 @@
     <div class="bottom-buttons">
       <button onclick="goToStep(2)">YES (バーコードを読み取る)</button>
       <button class="secondary" onclick="skipJobNo()">NO (次へ進む)</button>
-      <button type="button" class="inline-history-btn" onclick="showPickHistory()">📋 ピック済み一覧</button>
     </div>
   </div>
 
@@ -816,7 +725,6 @@
     <select id="input-purpose"></select>
     <div class="bottom-buttons">
       <button onclick="saveInfoAndGoNext()">次へ (対象の読取へ)</button>
-      <button type="button" class="inline-history-btn" onclick="showPickHistory()">📋 ピック済み一覧</button>
       <button class="secondary" onclick="goToStep(1)">最初に戻る</button>
     </div>
   </div>
@@ -845,9 +753,8 @@
     </div>
 
     <div class="bottom-buttons">
-      <button type="button" class="inline-history-btn" onclick="showPickHistory()">📋 ピック済み一覧</button>
       <button class="secondary" onclick="goToStep(3)">戻る</button>
-      <button class="danger" onclick="finishWorkAndSend()">作業を終了して送信する</button>
+      <button class="danger" onclick="goToStep(6)">作業を終了する</button>
     </div>
   </div>
 
@@ -879,8 +786,7 @@
     
     <div class="bottom-buttons">
       <button onclick="submitData(false)">保存して【次】を読み取る</button>
-      <button type="button" class="inline-history-btn" onclick="showPickHistory()">📋 ピック済み一覧</button>
-      <button id="btn-submit-finish" class="danger" onclick="submitData(true)">保存して【作業を終了・まとめて送信】する</button>
+      <button id="btn-submit-finish" class="danger" onclick="submitData(true)">保存して【作業を終了】する</button>
       <button class="secondary" onclick="goToStep(4)">読み直す / 戻る</button>
     </div>
   </div>
@@ -890,8 +796,7 @@
     <p>作業が完了しました。</p>
     <div id="queue-status-box" style="padding:15px; border-radius:6px; margin-bottom:15px; text-align:center;"></div>
     <div class="bottom-buttons">
-      <button type="button" class="inline-send-btn" onclick="sendPendingNow()">📤 未送信データを送信</button>
-      <button type="button" onclick="showPickHistory()">📋 ピック済み一覧</button>
+      <button type="button" onclick="showPickHistory()">ピッキング履歴を確認</button>
       <button onclick="resetApp()">次の作業を行う (最初に戻る)</button>
     </div>
   </div>
@@ -920,19 +825,7 @@
   <div id="pick-history-modal" class="modal-overlay" style="z-index: 10001;">
     <div class="modal-content" style="max-width:520px; text-align:left;">
       <h3 style="margin-top:0; text-align:center;">ピッキング履歴</h3>
-      <div class="pick-history-toolbar">
-        <select id="pick-history-date-filter" onchange="renderPickHistory()">
-          <option value="ALL">すべての日付</option>
-        </select>
-        <button type="button" style="width:90px; min-height:40px; padding:6px; margin:0; font-size:13px;" onclick="setPickHistoryToday()">今日</button>
-      </div>
       <div id="pick-history-summary" style="font-size:13px; margin-bottom:8px; color:#555;"></div>
-      <div style="margin:8px 0;">
-        <button type="button" class="debug-log-btn" onclick="renderDebugLogs()">検証ログを表示</button>
-        <button type="button" class="debug-log-btn" onclick="copyDebugLogs()">検証ログをコピー</button>
-        <button type="button" class="debug-log-btn" onclick="clearDebugLogs()">検証ログを削除</button>
-      </div>
-      <div id="debug-log-box" class="debug-log-box" style="display:none;"></div>
       <div id="pick-history-list" style="max-height:55dvh; overflow:auto; border:1px solid #ddd; border-radius:8px; padding:8px; background:#fafafa;"></div>
       <div class="modal-buttons" style="margin-top:10px;">
         <button type="button" class="secondary" onclick="closePickHistory()">閉じる</button>
@@ -977,14 +870,9 @@
 
     const STORAGE_KEY = 'handy_pending_picks_v2';
     const PICK_HISTORY_KEY = 'handy_pick_history_v2';
-    const DEBUG_LOG_KEY = 'handy_debug_logs_v1';
-    const MAX_DEBUG_LOGS = 300;
-    const MAX_BATCH_ITEMS = 10;
-    // checkBatch再確認リトライ設定。
-    // 自宅Wi-Fiで正常動作する範囲に抑えつつ、弱いWi-Fiでの確認遅延に少し粘る。
-    const ACK_RETRY_COUNT = 5;
-    const ACK_RETRY_INTERVAL_MS = 2000;
-    const ACK_CHECK_TIMEOUT_MS = 12000;
+    const MAX_BATCH_ITEMS = 30;
+    const ACK_RETRY_COUNT = 6;
+    const ACK_RETRY_INTERVAL_MS = 1200;
 
     let apiQueue = [];
     let isApiProcessing = false;
@@ -1033,6 +921,15 @@
     }
 
 
+    function isAuthErrorMessage_(message) {
+      const text = String(message || '');
+      return (
+        text.indexOf('token') !== -1 ||
+        text.indexOf('有効期限') !== -1 ||
+        text.indexOf('認証') !== -1
+      );
+    }
+
     function postApi(action, payload) {
       const body = Object.assign({}, payload || {}, {
         action: action,
@@ -1071,13 +968,12 @@
         if (!result || result.status !== 'OK') {
           const message = result && result.message ? result.message : 'APIエラーが発生しました。';
 
-          if (
-            message.indexOf('token') !== -1 ||
-            message.indexOf('有効期限') !== -1 ||
-            message.indexOf('認証') !== -1
-          ) {
-            alert('認証期限が切れたか、認証情報が無効です。入口GASから開き直してください。');
-            redirectToEntry();
+          if (isAuthErrorMessage_(message)) {
+            // 自動遷移しない。未送信キューはlocalStorageに保持したまま、
+            // ユーザー操作で再認証して送信を再開できるようにする。
+            sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+            authToken = '';
+            updateQueueUI();
           }
 
           throw new Error(message);
@@ -1098,20 +994,13 @@
     }
 
     async function bootstrapApp() {
-      // 初期データ取得はJSONP。
+      // 初期データ取得はPOST fetchではなくJSONPにする。
+      // 社内ネットワークではGASのfetch応答読取が遅延することがあるため。
       const url = API_URL +
         '?action=bootstrap' +
         '&token=' + encodeURIComponent(authToken);
 
       const result = await jsonpRequest(url, 15000);
-
-      if (!result || result.status !== 'OK') {
-        throw new Error(
-          result && result.message
-            ? 'bootstrap APIエラー: ' + result.message
-            : 'bootstrap APIから正常な応答がありません。'
-        );
-      }
 
       loginUserName = result.userName || '';
       sessionData.person = loginUserName;
@@ -1122,10 +1011,10 @@
       const users = Array.isArray(result.allUsers) ? result.allUsers : [];
 
       if (users.length === 0) {
-        throw new Error('担当者リストを取得できませんでした。登録用GASの現従業員取得を確認してください。');
+        throw new Error('担当者リストを取得できませんでした。');
       }
 
-      users.forEach(function(name) {
+      users.forEach(name => {
         const option = document.createElement('option');
         option.value = name;
         option.textContent = name;
@@ -1237,13 +1126,71 @@
       return prefix + '-' + Date.now() + '-' + rand;
     }
 
+    function parseHandyDate_(value) {
+      const text = String(value || '').trim();
+      if (!text) return null;
+
+      // 受信ログから戻るJST形式にも対応する。
+      const jstMatch = text.match(
+        /^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{1,2}):(\d{1,2}))?$/
+      );
+
+      if (jstMatch) {
+        return new Date(
+          Number(jstMatch[1]),
+          Number(jstMatch[2]) - 1,
+          Number(jstMatch[3]),
+          Number(jstMatch[4] || 0),
+          Number(jstMatch[5] || 0),
+          Number(jstMatch[6] || 0)
+        );
+      }
+
+      const date = new Date(text);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    function getOperationDateKey_(value) {
+      const date = parseHandyDate_(value);
+
+      if (!date) {
+        return '';
+      }
+
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Tokyo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).formatToParts(date);
+
+      const map = {};
+      parts.forEach(function(part) {
+        map[part.type] = part.value;
+      });
+
+      return [map.year || '', map.month || '', map.day || ''].join('-');
+    }
+
     function queueContextKey(pick) {
-      return [
+      const parts = [
         pick.jobNo || '',
         pick.person || '',
         pick.purpose || '',
         pick.purposeName || ''
-      ].join('|');
+      ];
+
+      // 棚卸だけは実施日単位でバッチを分離する。
+      // 翌日再送でも元の棚卸日のtanalogへ登録するため。
+      if (String(pick.purposeName || '') === '棚卸') {
+        parts.push(
+          getOperationDateKey_(
+            pick.operationAt || pick.createdAt || ''
+          )
+        );
+      }
+
+      return parts.join('|');
     }
 
     function loadPickHistory() {
@@ -1259,114 +1206,6 @@
       const trimmed = rows.slice(-500);
       localStorage.setItem(PICK_HISTORY_KEY, JSON.stringify(trimmed));
     }
-
-
-    function safeDebugPayload_(payload) {
-      try {
-        const copy = JSON.parse(JSON.stringify(payload || {}));
-
-        if (copy.token) {
-          copy.token = '[masked]';
-        }
-
-        if (copy.authToken) {
-          copy.authToken = '[masked]';
-        }
-
-        return copy;
-      } catch (error) {
-        return { value: String(payload) };
-      }
-    }
-
-    function addDebugLog(eventName, payload) {
-      try {
-        const rows = JSON.parse(localStorage.getItem(DEBUG_LOG_KEY) || '[]');
-        const entry = {
-          at: new Date().toLocaleString('ja-JP'),
-          event: eventName,
-          online: navigator.onLine,
-          payload: safeDebugPayload_(payload || {})
-        };
-
-        rows.push(entry);
-
-        while (rows.length > MAX_DEBUG_LOGS) {
-          rows.shift();
-        }
-
-        localStorage.setItem(DEBUG_LOG_KEY, JSON.stringify(rows));
-
-        const box = document.getElementById('debug-log-box');
-
-        if (box && box.style.display !== 'none') {
-          renderDebugLogs();
-        }
-      } catch (error) {
-        console.warn('debug log write failed', error);
-      }
-    }
-
-    function getDebugLogsText_() {
-      let rows = [];
-
-      try {
-        rows = JSON.parse(localStorage.getItem(DEBUG_LOG_KEY) || '[]');
-      } catch (error) {
-        rows = [];
-      }
-
-      if (rows.length === 0) {
-        return '検証ログはありません。';
-      }
-
-      return rows.map(function(row, index) {
-        return [
-          '[' + (index + 1) + '] ' + (row.at || ''),
-          'event=' + (row.event || ''),
-          'online=' + String(row.online),
-          'payload=' + JSON.stringify(row.payload || {})
-        ].join('\n');
-      }).join('\n\n');
-    }
-
-    function renderDebugLogs() {
-      const box = document.getElementById('debug-log-box');
-
-      if (!box) {
-        return;
-      }
-
-      box.style.display = 'block';
-      box.textContent = getDebugLogsText_();
-    }
-
-    function copyDebugLogs() {
-      const text = getDebugLogsText_();
-
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text)
-          .then(function() {
-            alert('検証ログをコピーしました。');
-          })
-          .catch(function() {
-            prompt('コピーできない場合は、以下を手動でコピーしてください。', text);
-          });
-        return;
-      }
-
-      prompt('以下をコピーしてください。', text);
-    }
-
-    function clearDebugLogs() {
-      if (!confirm('検証ログをlocalStorageから削除します。よろしいですか？')) {
-        return;
-      }
-
-      localStorage.removeItem(DEBUG_LOG_KEY);
-      renderDebugLogs();
-    }
-
 
     function upsertPickHistory(pick) {
       const rows = loadPickHistory();
@@ -1406,81 +1245,6 @@
     }
 
 
-    function removePickFromLocalStorage_(pickId) {
-      const id = String(pickId || '').trim();
-
-      if (!id) {
-        return false;
-      }
-
-      const beforeQueue = apiQueue.length;
-      apiQueue = apiQueue.filter(function(pick) {
-        return String(pick.pickId || pick.id || '').trim() !== id;
-      });
-
-      const rows = loadPickHistory();
-      const beforeHistory = rows.length;
-      const nextRows = rows.filter(function(row) {
-        return String(row.pickId || '').trim() !== id;
-      });
-
-      if (nextRows.length !== beforeHistory) {
-        savePickHistory(nextRows);
-      }
-
-      if (apiQueue.length !== beforeQueue) {
-        saveQueueToStorage();
-      } else {
-        updateQueueUI();
-      }
-
-      renderPickHistory();
-      refreshVisibleScanHistoryStatuses_();
-
-      return apiQueue.length !== beforeQueue || nextRows.length !== beforeHistory;
-    }
-
-    function deleteErrorPickFromHistory(pickId) {
-      addDebugLog('deleteErrorPick:click', {
-        pickId: pickId
-      });
-
-      const id = String(pickId || '').trim();
-
-      if (!id) {
-        return;
-      }
-
-      const queued = apiQueue.find(function(pick) {
-        return String(pick.pickId || pick.id || '').trim() === id;
-      });
-
-      const historyRows = loadPickHistory();
-      const historyRow = historyRows.find(function(row) {
-        return String(row.pickId || '').trim() === id;
-      });
-
-      const status = queued
-        ? String(queued.status || '')
-        : String(historyRow && historyRow.status || '');
-
-      if (status !== 'ERROR') {
-        alert('削除できるのはエラー状態の履歴だけです。');
-        return;
-      }
-
-      if (!confirm('このエラー履歴と端末内未送信データをlocalStorageから削除します。\nサーバーへは送信されません。よろしいですか？')) {
-        return;
-      }
-
-      const removed = removePickFromLocalStorage_(id);
-
-      if (!removed) {
-        alert('削除対象が見つかりませんでした。');
-      }
-    }
-
-
     function getHistoryStatusMap_() {
       const rows = loadPickHistory();
       const map = {};
@@ -1503,7 +1267,7 @@
         const status = statusMap[pick.pickId];
 
         // GAS受信済みまたは登録済みなら、端末側の未受信キューからは削除してよい。
-        // ここが無いと、履歴は登録済みなのに「端末内未送信データ 残り1件」が残る。
+        // ここが無いと、履歴は登録済みなのに「未受信データ 残り1件」が残る。
         return !(status === 'RECEIVED' || status === 'REGISTERED');
       });
 
@@ -1557,107 +1321,6 @@
       return '';
     }
 
-
-    function getPickHistoryDateKey_(row) {
-      const source = row && (row.createdAt || row.receivedAt || row.updatedAt || row.registeredAt);
-
-      if (!source) {
-        return '日付不明';
-      }
-
-      const date = new Date(source);
-
-      if (Number.isNaN(date.getTime())) {
-        return String(source).slice(0, 10) || '日付不明';
-      }
-
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const day = String(date.getDate()).padStart(2, '0');
-
-      return year + '-' + month + '-' + day;
-    }
-
-    function formatPickHistoryDateLabel_(dateKey) {
-      if (dateKey === 'ALL') {
-        return 'すべての日付';
-      }
-
-      if (dateKey === '日付不明') {
-        return dateKey;
-      }
-
-      const parts = String(dateKey).split('-');
-
-      if (parts.length !== 3) {
-        return dateKey;
-      }
-
-      return parts[0] + '/' + parts[1] + '/' + parts[2];
-    }
-
-    function updatePickHistoryDateFilterOptions_(rows) {
-      const select = document.getElementById('pick-history-date-filter');
-
-      if (!select) {
-        return;
-      }
-
-      const currentValue = select.value || 'ALL';
-      const dateMap = {};
-
-      rows.forEach(function(row) {
-        dateMap[getPickHistoryDateKey_(row)] = true;
-      });
-
-      const dateKeys = Object.keys(dateMap).sort(function(a, b) {
-        if (a === '日付不明') return 1;
-        if (b === '日付不明') return -1;
-        return a < b ? 1 : -1;
-      });
-
-      select.innerHTML = '';
-
-      const allOption = document.createElement('option');
-      allOption.value = 'ALL';
-      allOption.textContent = 'すべての日付';
-      select.appendChild(allOption);
-
-      dateKeys.forEach(function(dateKey) {
-        const option = document.createElement('option');
-        option.value = dateKey;
-        option.textContent = formatPickHistoryDateLabel_(dateKey);
-        select.appendChild(option);
-      });
-
-      const hasCurrent = Array.prototype.some.call(select.options, function(option) {
-        return option.value === currentValue;
-      });
-
-      select.value = hasCurrent ? currentValue : 'ALL';
-    }
-
-    function setPickHistoryToday() {
-      const select = document.getElementById('pick-history-date-filter');
-
-      if (!select) {
-        return;
-      }
-
-      const now = new Date();
-      const today =
-        now.getFullYear() + '-' +
-        String(now.getMonth() + 1).padStart(2, '0') + '-' +
-        String(now.getDate()).padStart(2, '0');
-
-      const hasToday = Array.prototype.some.call(select.options, function(option) {
-        return option.value === today;
-      });
-
-      select.value = hasToday ? today : 'ALL';
-      renderPickHistory();
-    }
-
     function showPickHistory() {
       renderPickHistory();
       document.getElementById('pick-history-modal').style.display = 'flex';
@@ -1670,51 +1333,29 @@
     function renderPickHistory() {
       const list = document.getElementById('pick-history-list');
       const summary = document.getElementById('pick-history-summary');
-      const dateFilter = document.getElementById('pick-history-date-filter');
 
       if (!list || !summary) return;
 
-      const allRows = loadPickHistory().slice().reverse();
-      updatePickHistoryDateFilterOptions_(allRows);
-
-      const selectedDate = dateFilter ? (dateFilter.value || 'ALL') : 'ALL';
-      const rows = selectedDate === 'ALL'
-        ? allRows
-        : allRows.filter(function(row) {
-            return getPickHistoryDateKey_(row) === selectedDate;
-          });
-
+      const rows = loadPickHistory().slice().reverse();
       const pendingCount = apiQueue.length;
 
-      summary.innerHTML =
-        '端末内未送信: <strong>' + pendingCount + '</strong> 件 / ' +
-        '表示: <strong>' + escapeHtmlClient(formatPickHistoryDateLabel_(selectedDate)) + '</strong> ' +
-        rows.length + ' 件 / 全履歴 ' + allRows.length + ' 件';
+      summary.innerHTML = '端末内未送信: <strong>' + pendingCount + '</strong> 件 / 表示: 直近 ' + rows.length + ' 件';
 
       if (rows.length === 0) {
-        list.innerHTML = '<div style="padding:12px; color:#666;">この日付の履歴はありません。</div>';
+        list.innerHTML = '<div style="padding:12px; color:#666;">履歴はありません。</div>';
         return;
       }
-
-      let lastDateKey = '';
 
       list.innerHTML = rows.map(function(row) {
         const status = row.status || 'PENDING';
         const qtyText = row.isDelete ? '削除' : ('数量: ' + escapeHtmlClient(row.qty));
-        const dateKey = getPickHistoryDateKey_(row);
-        const timeText = row.createdAt ? new Date(row.createdAt).toLocaleString('ja-JP') : '';
-        const headingHtml = selectedDate === 'ALL' && dateKey !== lastDateKey
-          ? '<div class="pick-history-date-heading">' + escapeHtmlClient(formatPickHistoryDateLabel_(dateKey)) + '</div>'
-          : '';
-
-        lastDateKey = dateKey;
-
-        const errorDeleteButton = status === 'ERROR'
-          ? '<button type="button" class="history-delete-btn" onclick="deleteErrorPickFromHistory(\'' + escapeHtmlClient(row.pickId || '') + '\')">このエラーを削除</button>'
-          : '';
+        const historyTime = row.operationAt || row.createdAt || '';
+        const historyDate = parseHandyDate_(historyTime);
+        const timeText = historyDate
+          ? historyDate.toLocaleString('ja-JP')
+          : String(historyTime || '');
 
         return `
-          ${headingHtml}
           <div class="pick-history-row">
             <div class="pick-history-main">
               ${escapeHtmlClient(row.barcode || '')}
@@ -1730,7 +1371,6 @@
               ${row.batchId ? ' / batch: ' + escapeHtmlClient(row.batchId) : ''}
             </div>
             ${row.lastError ? '<div class="pick-history-sub pick-status-error">最終エラー: ' + escapeHtmlClient(row.lastError) + '</div>' : ''}
-            ${errorDeleteButton}
           </div>
         `;
       }).join('');
@@ -1767,93 +1407,55 @@
     }
 
     function checkBatchReceived(batchId, pickIds) {
-      addDebugLog('checkBatch:request', {
-        batchId: batchId,
-        pickIds: pickIds,
-        timeoutMs: ACK_CHECK_TIMEOUT_MS || 10000
-      });
-
       const url = API_URL +
         '?action=checkBatch' +
         '&batchId=' + encodeURIComponent(batchId) +
         '&ids=' + encodeURIComponent(pickIds.join(',')) +
         '&token=' + encodeURIComponent(authToken);
 
-      return jsonpRequest(url, ACK_CHECK_TIMEOUT_MS);
-    }
-
-    function sleep_(ms) {
-      return new Promise(function(resolve) {
-        setTimeout(resolve, ms);
-      });
-    }
-
-    function getAckMatchedIds_(result) {
-      if (!result || result.status !== 'OK') {
-        return [];
-      }
-
-      const map = {};
-
-      [result.receivedPickIds, result.registeredPickIds, result.errorPickIds].forEach(function(list) {
-        if (!Array.isArray(list)) return;
-
-        list.forEach(function(id) {
-          if (id) map[id] = true;
-        });
-      });
-
-      return Object.keys(map);
+      return jsonpRequest(url, 10000);
     }
 
     async function waitForBatchAck(batchId, pickIds) {
-      let lastMessage = '';
+      let lastResult = null;
 
       for (let i = 0; i < ACK_RETRY_COUNT; i++) {
         try {
-          addDebugLog('checkBatch:attempt', {
-            batchId: batchId,
-            attempt: i + 1,
-            maxAttempts: ACK_RETRY_COUNT
-          });
+          lastResult = await checkBatchReceived(batchId, pickIds);
 
-          const result = await checkBatchReceived(batchId, pickIds);
+          if (lastResult && lastResult.status === 'OK') {
+            const received = Array.isArray(lastResult.receivedPickIds)
+              ? lastResult.receivedPickIds
+              : [];
 
-          if (result && result.status === 'OK') {
-            addDebugLog('checkBatch:response', {
-              batchId: batchId,
-              attempt: i + 1,
-              result: result
-            });
-
-            const matchedIds = getAckMatchedIds_(result);
-
-            if (matchedIds.length > 0) {
-              return result;
+            if (received.length > 0) {
+              return lastResult;
             }
+          }
 
-            lastMessage = 'GAS受信確認待ちです。';
-          } else {
-            lastMessage = result && result.message
-              ? result.message
-              : 'GAS受信確認の応答が不正です。';
+          if (
+            lastResult &&
+            lastResult.status === 'ERROR' &&
+            isAuthErrorMessage_(lastResult.message)
+          ) {
+            throw new Error(
+              lastResult.message || '認証期限が切れています。'
+            );
           }
 
         } catch (error) {
-          lastMessage = error && error.message ? error.message : String(error);
-          addDebugLog('checkBatch:attempt-error', {
-            batchId: batchId,
-            attempt: i + 1,
-            message: lastMessage
-          });
+          if (isAuthErrorMessage_(error && error.message)) {
+            throw error;
+          }
+          lastResult = { status: 'ERROR', message: error.message };
         }
 
-        if (i < ACK_RETRY_COUNT - 1) {
-          await sleep_(ACK_RETRY_INTERVAL_MS);
-        }
+        await new Promise(function(resolve) {
+          setTimeout(resolve, ACK_RETRY_INTERVAL_MS);
+        });
       }
 
-      throw new Error(lastMessage || 'GAS受信確認が取れませんでした。');
+      throw new Error(lastResult && lastResult.message ? lastResult.message : 'GAS受信確認が取れませんでした。');
     }
 
     function getTokenPayload_() {
@@ -1935,7 +1537,8 @@
               purposeName: item.purposeName,
               jobNo: item.jobNo,
               status: item.status,
-              createdAt: item.receivedAt || new Date().toISOString(),
+              operationAt: item.operationAt || item.receivedAt || '',
+              createdAt: item.operationAt || item.receivedAt || new Date().toISOString(),
               receivedAt: item.receivedAt || '',
               registeredAt: item.registeredAt || '',
               lastError: item.error || ''
@@ -1954,7 +1557,6 @@
           }
 
           renderPickHistory();
-          refreshVisibleScanHistoryStatuses_();
         })
         .catch(function(error) {
           alert('サーバー履歴の取得に失敗しました: ' + error.message);
@@ -1989,39 +1591,12 @@
     function saveQueueToStorage() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(apiQueue));
       updateQueueUI();
-      refreshVisibleScanHistoryStatuses_();
-    }
-
-    function canAutoRetryErrorPick_(pick) {
-      const retryCount = Number(pick.retryCount || 0);
-
-      // 古いERRORが詰まりになって以降の新規PENDINGを止めない。
-      // ERRORは最大2回まで自動再試行し、それ以降は手動再送に回す。
-      if (retryCount >= 2) {
-        return false;
-      }
-
-      const lastErrorAt = pick.lastErrorAt ? Date.parse(pick.lastErrorAt) : 0;
-
-      if (!lastErrorAt) {
-        return true;
-      }
-
-      return Date.now() - lastErrorAt >= 30000;
     }
 
     function getNextBatch() {
-      // 新規ピックデータを最優先で送る。
-      // 古いERRORはPENDINGが無い場合だけ再試行する。
-      let candidates = apiQueue.filter(function(pick) {
-        return pick.status === 'PENDING';
+      const candidates = apiQueue.filter(function(pick) {
+        return pick.status === 'PENDING' || pick.status === 'ERROR';
       });
-
-      if (candidates.length === 0) {
-        candidates = apiQueue.filter(function(pick) {
-          return pick.status === 'ERROR' && canAutoRetryErrorPick_(pick);
-        });
-      }
 
       if (candidates.length === 0) {
         return [];
@@ -2036,43 +1611,7 @@
         .slice(0, MAX_BATCH_ITEMS);
     }
 
-    function retryAllErrorPicksNow() {
-      addDebugLog('manualRetryErrors:start', {
-        errorCount: apiQueue.filter(function(pick) { return pick.status === 'ERROR'; }).length
-      });
-
-      let changed = false;
-
-      apiQueue.forEach(function(pick) {
-        if (pick.status === 'ERROR') {
-          pick.status = 'PENDING';
-          pick.retryCount = 0;
-          pick.lastError = '';
-          pick.lastErrorAt = '';
-          changed = true;
-
-          updatePickHistoryStatus(pick.pickId, 'PENDING', {
-            lastError: '',
-            lastErrorAt: ''
-          });
-        }
-      });
-
-      if (changed) {
-        saveQueueToStorage();
-        processQueue();
-      } else {
-        updateQueueUI();
-      }
-    }
-
     async function processQueue() {
-      addDebugLog('processQueue:start', {
-        queueLength: apiQueue.length,
-        isApiProcessing: isApiProcessing,
-        online: navigator.onLine
-      });
-
       if (isApiProcessing) {
         updateQueueUI();
         return;
@@ -2084,11 +1623,9 @@
       }
 
       if (!authToken || isAuthTokenExpired_()) {
-        const first = apiQueue[0];
-        first.retryCount = Number(first.retryCount || 0) + 1;
-        first.lastError = '認証tokenがありません、または有効期限切れです。入口GASから開き直してください。';
-        first.status = 'ERROR';
-        updatePickHistoryStatus(first.pickId, 'ERROR', { lastError: first.lastError });
+        // 認証切れはデータエラーではない。
+        // キュー状態を変更せずlocalStorageへ保持し、再認証後に続きから再開する。
+        isApiProcessing = false;
         saveQueueToStorage();
         return;
       }
@@ -2127,27 +1664,20 @@
         person: first.person || '',
         purpose: first.purpose || '',
         purposeName: first.purposeName || '',
+        operationAt: first.operationAt || first.createdAt || '',
         items: batchItems.map(function(pick) {
           return {
             id: pick.pickId,
             pickId: pick.pickId,
             barcode: pick.barcode,
             qty: Number(pick.qty),
-            isDelete: pick.isDelete === true
+            isDelete: pick.isDelete === true,
+            operationAt: pick.operationAt || pick.createdAt || ''
           };
         })
       };
 
       try {
-        addDebugLog('submit:start', {
-          batchId: batchId,
-          pickIds: batchItems.map(function(pick) { return pick.pickId; }),
-          itemCount: batchItems.length,
-          purposeName: payload.purposeName,
-          jobNo: payload.jobNo,
-          apiUrl: API_URL
-        });
-
         await fetch(API_URL, {
           method: 'POST',
           mode: 'no-cors',
@@ -2160,21 +1690,11 @@
           }))
         });
 
-        addDebugLog('submit:fetch-finished', {
-          batchId: batchId,
-          note: 'no-corsのためHTTPステータスは取得不可'
-        });
-
         const pickIds = batchItems.map(function(pick) {
           return pick.pickId;
         });
 
         const ack = await waitForBatchAck(batchId, pickIds);
-        addDebugLog('checkBatch:ack-received', {
-          batchId: batchId,
-          ack: ack
-        });
-
         const receivedIds = Array.isArray(ack.receivedPickIds) ? ack.receivedPickIds : [];
         const registeredIds = Array.isArray(ack.registeredPickIds) ? ack.registeredPickIds : [];
         const errorIds = Array.isArray(ack.errorPickIds) ? ack.errorPickIds : [];
@@ -2228,22 +1748,39 @@
         processQueue();
 
       } catch (error) {
-        addDebugLog('processQueue:error', {
-          batchId: batchId,
-          message: error && error.message ? error.message : String(error),
-          stack: error && error.stack ? error.stack : ''
-        });
+        const errorMessage = error && error.message
+          ? error.message
+          : String(error);
 
-        const errorMessage = error && error.message ? error.message : String(error);
-        const isAckError =
-          errorMessage.indexOf('GAS受信確認') !== -1 ||
-          errorMessage.indexOf('確認API') !== -1 ||
-          errorMessage.indexOf('受信確認待ち') !== -1;
+        if (isAuthErrorMessage_(errorMessage)) {
+          // 認証切れでは送信データをERROR扱いしない。
+          // PENDINGへ戻してlocalStorageに保持し、再認証後に同じpickIdで再送する。
+          batchItems.forEach(function(pick) {
+            pick.status = 'PENDING';
+            pick.lastError = '認証期限切れのため送信を一時停止しています。';
+            pick.lastErrorAt = new Date().toISOString();
+
+            updatePickHistoryStatus(pick.pickId, 'PENDING', {
+              batchId: batchId,
+              lastError: pick.lastError,
+              lastErrorAt: pick.lastErrorAt
+            });
+
+            updateHistoryStatus(pick.pickId, 'saving', '再認証待ち');
+          });
+
+          sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+          authToken = '';
+          isApiProcessing = false;
+          saveQueueToStorage();
+          console.warn('batch paused by auth expiry:', errorMessage);
+          return;
+        }
 
         batchItems.forEach(function(pick) {
           pick.status = 'ERROR';
           pick.retryCount = Number(pick.retryCount || 0) + 1;
-          pick.lastError = isAckError ? '受信確認待ち: ' + errorMessage : errorMessage;
+          pick.lastError = errorMessage;
           pick.lastErrorAt = new Date().toISOString();
 
           updatePickHistoryStatus(pick.pickId, 'ERROR', {
@@ -2252,7 +1789,7 @@
             lastErrorAt: pick.lastErrorAt
           });
 
-          updateHistoryStatus(pick.pickId, 'error', isAckError ? '受信確認待ち' : '再送待機中');
+          updateHistoryStatus(pick.pickId, 'error', '再送待機中');
         });
 
         isApiProcessing = false;
@@ -2264,7 +1801,6 @@
           return Number(pick.retryCount || 1);
         }));
 
-        // 長すぎる自動待機は通常環境でも送信不能に見えるため最大30秒に抑える。
         const waitMs = Math.min(30000, 3000 + retryCount * 2000);
         setTimeout(processQueue, waitMs);
       }
@@ -2291,13 +1827,23 @@
       const errors = apiQueue.filter(function(p) { return p.status === 'ERROR'; }).length;
       const current = apiQueue[0] || {};
       const lastError = current.lastError || '';
+      const authRequired = !authToken || isAuthTokenExpired_();
 
-      statusBox.style.background = errors > 0 ? '#fce8e6' : '#fff3cd';
-      statusBox.style.borderColor = errors > 0 ? '#f5c2c7' : '#ffeeba';
+      statusBox.style.background = authRequired || errors > 0 ? '#fce8e6' : '#fff3cd';
+      statusBox.style.borderColor = authRequired || errors > 0 ? '#f5c2c7' : '#ffeeba';
       statusBox.innerHTML = `
-        <p style="margin:0; font-size:16px; font-weight:bold; color:${errors > 0 ? '#b31412' : '#856404'};">
-          端末内未送信データ 残り <span style="font-size:20px;">${apiQueue.length}</span> 件
+        <p style="margin:0; font-size:16px; font-weight:bold; color:${authRequired || errors > 0 ? '#b31412' : '#856404'};">
+          未受信データ 残り <span style="font-size:20px;">${apiQueue.length}</span> 件
         </p>
+        ${authRequired ? `
+          <p style="margin:8px 0 0 0; font-size:13px; color:#b31412; font-weight:bold;">
+            認証期限が切れています。未送信データは端末内に保持されています。
+          </p>
+          <button type="button" onclick="redirectToEntry()"
+            style="margin-top:8px;padding:10px 14px;border:0;border-radius:6px;background:#4285f4;color:#fff;font-weight:bold;">
+            再認証して送信を再開
+          </button>
+        ` : ''}
         <p style="margin:6px 0 0 0; font-size:12px; color:#555; font-weight:bold;">
           未送信: ${pending} / 送信中: ${sending} / 再送待機: ${errors}
         </p>
@@ -2307,7 +1853,7 @@
           </p>
         ` : ''}
         <p style="margin:6px 0 0 0; font-size:12px; color:#856404; font-weight:bold;">
-          作業終了時にまとめて送信し、GAS受信確認が取れたデータだけ端末キューから削除します。
+          GAS受信確認が取れたデータだけ端末キューから削除します。
           画面を閉じた場合は、次回入口GASから開いた時に再送します。
         </p>
       `;
@@ -2316,6 +1862,18 @@
     function addToQueue(payload, isDelete) {
       const item = payload.items[0];
       const pickId = String(item.pickId || item.id || createClientId('pick'));
+      const existingHistory = loadPickHistory().find(function(row) {
+        return row.pickId === pickId;
+      });
+      const nowIso = new Date().toISOString();
+
+      // 同じpickIdの修正・削除・再送でも、最初に棚卸した日時を維持する。
+      const operationAt = String(
+        item.operationAt ||
+        payload.operationAt ||
+        (existingHistory && (existingHistory.operationAt || existingHistory.createdAt)) ||
+        nowIso
+      );
 
       const pick = {
         pickId: pickId,
@@ -2330,15 +1888,17 @@
         status: 'PENDING',
         retryCount: 0,
         lastError: '',
-        createdAt: new Date().toISOString()
+        operationAt: operationAt,
+        createdAt: existingHistory && existingHistory.createdAt
+          ? existingHistory.createdAt
+          : operationAt
       };
 
       apiQueue.push(pick);
       upsertPickHistory(pick);
 
-      // ピック時点では端末内localStorageへ保存するだけ。
-      // 通信は「作業を終了して送信する」時にまとめて実行する。
       saveQueueToStorage();
+      processQueue();
     }
 
 
@@ -2354,13 +1914,6 @@
     }
 
     function powerOffCameraHardware() {
-      addDebugLog('camera:powerOff', {
-        hasStream: !!cameraStream,
-        hasVideoTrack: !!videoTrack,
-        currentStep: currentStep,
-        scanMode: scanMode
-      });
-
       stopScanner();
       if (cameraStream) {
         cameraStream.getTracks().forEach(track => track.stop()); 
@@ -2413,19 +1966,6 @@
     function forceNumeric(inputElem) {
       let val = inputElem.value.replace(/[０-９]/g, function(s) { return String.fromCharCode(s.charCodeAt(0) - 0xFEE0); });
       inputElem.value = val.replace(/[^0-9]/g, '');
-    }
-
-    function normalizeScannedCode_(code) {
-      return String(code || '')
-        .replace(/[０-９]/g, function(s) {
-          return String.fromCharCode(s.charCodeAt(0) - 0xFEE0);
-        })
-        .replace(/[\r\n\t\s]/g, '')
-        .trim();
-    }
-
-    function normalizeItemCode_(code) {
-      return normalizeScannedCode_(code).replace(/[^0-9]/g, '');
     }
 
     function submitManualJobNo() {
@@ -2516,69 +2056,23 @@
     }
 
     function sendUpdateRequest(qty, isDelete) {
-      const payloadId = currentEditId;
-      const existingIndex = apiQueue.findIndex(function(pick) {
-        return pick.pickId === payloadId;
-      });
-
-      // まだGASへ送っていない端末内データは、通信せず端末内リストだけ修正する。
-      if (existingIndex >= 0) {
-        if (isDelete) {
-          apiQueue.splice(existingIndex, 1);
-          saveQueueToStorage();
-
-          const li = document.getElementById(payloadId);
-          if (li) li.remove();
-
-          updatePickHistoryStatus(payloadId, 'ERROR', {
-            lastError: '作業終了前に端末内で削除しました。'
-          });
-
-          delete historyContexts[payloadId];
-          return;
-        }
-
-        apiQueue[existingIndex].qty = qty;
-        apiQueue[existingIndex].status = 'PENDING';
-        apiQueue[existingIndex].lastError = '';
-        saveQueueToStorage();
-
-        updatePickHistoryStatus(payloadId, 'PENDING', {
-          qty: qty,
-          lastError: ''
-        });
-
-        updateHistoryUI(payloadId, qty, "saving", "端末内保存済み");
+      if (!navigator.onLine) {
+        showOfflineOverlay();
         return;
       }
 
-      // 既にGAS受信済み/登録済みの履歴を修正する場合だけ、削除/修正要求をキューに積む。
-      const ctx = historyContexts[payloadId];
+      const payloadId = currentEditId; const ctx = historyContexts[payloadId];
       const payload = {
-        jobNo: ctx ? ctx.jobNo : sessionData.jobNo,
-        person: sessionData.person,
-        purpose: ctx ? ctx.purpose : sessionData.purpose,
-        purposeName: ctx ? ctx.purposeName : sessionData.purposeName,
+        jobNo: ctx ? ctx.jobNo : sessionData.jobNo, person: sessionData.person, 
+        purpose: ctx ? ctx.purpose : sessionData.purpose, purposeName: ctx ? ctx.purposeName : sessionData.purposeName,
         items: [{ barcode: currentEditBarcode, qty: qty, id: payloadId, isDelete: isDelete }]
       };
-
-      if (isDelete) {
-        updateHistoryStatus(payloadId, "saving", "削除要求を端末内保存済み");
-      } else {
-        updateHistoryUI(payloadId, qty, "saving", "修正要求を端末内保存済み");
-      }
-
+      if (isDelete) { updateHistoryStatus(payloadId, "saving", "順番待ち..."); } 
+      else { updateHistoryUI(payloadId, qty, "saving", "順番待ち..."); }
       addToQueue(payload, isDelete);
     }
 
     function submitData(isFinish) {
-      addDebugLog('submitData:start', {
-        currentItemBarcode: currentItemBarcode,
-        isFinish: isFinish,
-        purposeName: sessionData.purposeName,
-        jobNo: sessionData.jobNo
-      });
-
       if (!navigator.onLine) {
         showOfflineOverlay();
         return;
@@ -2601,65 +2095,20 @@
         items: [{ barcode: currentItemBarcode, qty: qty, id: payloadId }]
       };
 
-      addHistoryUI(payloadId, currentItemBarcode, qty, "saving", "端末内保存済み");
+      addHistoryUI(payloadId, currentItemBarcode, qty, "saving", "順番待ち...");
       addToQueue(payload, false);
 
       document.getElementById('input-qty').value = "1";
       document.getElementById('captured-image').style.display = 'none';
       
-      if (isFinish) finishWorkAndSend(); else goToStep(4); 
-    }
-
-
-    function refreshVisibleScanHistoryStatuses_() {
-      const historyRows = loadPickHistory();
-      const historyMap = {};
-      const queueMap = {};
-
-      historyRows.forEach(function(row) {
-        if (row && row.pickId) {
-          historyMap[row.pickId] = row;
-        }
-      });
-
-      apiQueue.forEach(function(pick) {
-        if (pick && pick.pickId) {
-          queueMap[pick.pickId] = pick;
-        }
-      });
-
-      Object.keys(historyContexts).forEach(function(pickId) {
-        const row = historyMap[pickId];
-        const queued = queueMap[pickId];
-
-        if (queued) {
-          if (queued.status === 'SENDING') {
-            updateHistoryStatus(pickId, 'saving', '送信中...');
-          } else if (queued.status === 'ERROR') {
-            updateHistoryStatus(pickId, 'error', '再送待機中');
-          } else {
-            updateHistoryStatus(pickId, 'saving', '端末内保存済み');
-          }
-          return;
-        }
-
-        if (row && row.status === 'REGISTERED') {
-          updateHistoryStatus(pickId, 'ok', '登録済み');
-          return;
-        }
-
-        if (row && row.status === 'RECEIVED') {
-          updateHistoryStatus(pickId, 'ok', 'GAS受信済み');
-          return;
-        }
-      });
+      if (isFinish) goToStep(6); else goToStep(4); 
     }
 
     function addHistoryUI(id, code, qty, status, customText = "") {
       const list = document.getElementById('scan-history');
       const li = document.createElement('li');
       li.id = id; li.className = 'history-item';
-      let statusHtml = status === 'saving' ? `<span class="history-status status-saving">${customText || "端末内保存済み"}</span>` : `<span class="history-status status-ok">保存済</span>`;
+      let statusHtml = status === 'saving' ? `<span class="history-status status-saving">${customText || "保存中..."}</span>` : `<span class="history-status status-ok">保存済</span>`;
       li.innerHTML = `
         <div class="history-info"><span>${code} <small class="qty-label">(x${qty})</small></span>${statusHtml}</div>
         <button type="button" class="edit-btn" onclick="editHistory('${id}', '${code}', ${qty})">修正</button>
@@ -2681,50 +2130,12 @@
       if (li) {
         const statusSpan = li.querySelector('.history-status');
         if (status === "ok") { statusSpan.className = "history-status status-ok"; statusSpan.innerText = customText || "保存済"; } 
-        else if (status === "saving") { statusSpan.className = "history-status status-saving"; statusSpan.innerText = customText || "端末内保存済み"; } 
+        else if (status === "saving") { statusSpan.className = "history-status status-saving"; statusSpan.innerText = customText || "保存中..."; } 
         else if (status === "error") { statusSpan.className = "history-status status-error"; statusSpan.innerText = customText || "エラー"; }
       }
     }
 
-
-    function finishWorkAndSend() {
-      goToStep(6);
-      updateQueueUI();
-
-      if (apiQueue.length === 0) {
-        return;
-      }
-
-      if (!navigator.onLine) {
-        showOfflineOverlay();
-        return;
-      }
-
-      processQueue();
-    }
-
-    function sendPendingNow() {
-      if (apiQueue.length === 0) {
-        updateQueueUI();
-        alert('端末内の未送信データはありません。');
-        return;
-      }
-
-      if (!navigator.onLine) {
-        showOfflineOverlay();
-        return;
-      }
-
-      processQueue();
-    }
-
     function resetApp() {
-      if (apiQueue.length > 0) {
-        if (!confirm('端末内に未送信データが残っています。送信せずに次の作業へ進みますか？\n未送信データは端末内に残り、後で送信できます。')) {
-          return;
-        }
-      }
-
       sessionData = { jobNo: "", person: loginUserName || "", purpose: "", purposeName: "" };
       historyContexts = {}; 
       
@@ -2740,8 +2151,7 @@
     let cameraStream = null; let isDecoding = false; let detector = null; let zxingReader = null; let videoTrack = null; let isLightOn = false; let isScanning = false;
 
     const AUTO_ZOOM_ENABLED = true;
-    const DEFAULT_CAMERA_ZOOM = 1.4;
-    const ENABLE_CAPTURED_IMAGE = false; 
+    const DEFAULT_CAMERA_ZOOM = 1.4; 
 
     let zxingLoadPromise = null;
 
@@ -2754,16 +2164,14 @@
         return zxingLoadPromise;
       }
 
-      // 通常はhead内の <script src="./vendor/zxing.min.js"> で読み込み済み。
-      // ここは読み込み失敗時の保険として残す。
       zxingLoadPromise = new Promise(function(resolve) {
         const script = document.createElement('script');
         const timer = setTimeout(function() {
-          console.warn('ZXing library fallback load timeout');
+          console.warn('ZXing library load timeout');
           resolve(false);
         }, 8000);
 
-        script.src = './vendor/zxing.min.js?v=sync-zxing-fallback-1';
+        script.src = './vendor/zxing.min.js';
         script.async = true;
 
         script.onload = function() {
@@ -2773,7 +2181,7 @@
 
         script.onerror = function() {
           clearTimeout(timer);
-          console.warn('ZXing library fallback load failed');
+          console.warn('ZXing library load failed');
           resolve(false);
         };
 
@@ -3158,80 +2566,49 @@
     }
 
     function onBarcodeDetected(code, isManual = false) {
-      // 検出後は即デコーダ停止。
-      // カメラ読取時だけ送信できない場合、デコーダ継続・重複検出・端末負荷が通信処理に干渉している可能性がある。
-      stopScanner();
-
       playBeep();
-
-      const rawCode = String(code || '');
-      const normalizedCode = normalizeScannedCode_(rawCode);
-
-      addDebugLog('barcode:detected', {
-        source: isManual ? 'MANUAL' : 'CAMERA',
-        scanMode: scanMode,
-        rawCode: rawCode,
-        normalizedCode: normalizedCode,
-        rawLength: rawCode.length,
-        normalizedLength: normalizedCode.length
-      });
-
+      
       lastScannedCode = "";
       scanMatchCount = 0;
 
       let capturedSrc = "";
-      if (ENABLE_CAPTURED_IMAGE && !isManual && scanMode === 'ITEM') {
-        capturedSrc = captureVideoFrame('video-item');
-      }
-
+      if (!isManual && scanMode === 'ITEM') capturedSrc = captureVideoFrame('video-item');
+      
       if (scanMode === 'JOB') {
-        let finalJobNo = normalizedCode;
-
+        let finalJobNo = code;
+        
         if (!isManual && finalJobNo.length > 4) {
           finalJobNo = finalJobNo.substring(4);
         }
-
+        
         if (confirm("【 JOB NO 確認 】\n\n「 " + finalJobNo + " 」\n\nこのJOB NOでよろしいですか？\n※違う場合はキャンセルを押して読み直してください。")) {
           sessionData.jobNo = finalJobNo; 
           scanMode = null; 
           goToStep(3);
         } else {
+          isScanning = false;
           startCooldown(2); 
           startScanner();
         }
-
+        
       } else if (scanMode === 'ITEM') {
         if (navigator.vibrate) navigator.vibrate(50);
-
-        const finalItemCode = normalizeItemCode_(normalizedCode);
-
-        addDebugLog('barcode:item-normalized', {
-          source: isManual ? 'MANUAL' : 'CAMERA',
-          rawCode: rawCode,
-          normalizedCode: normalizedCode,
-          finalItemCode: finalItemCode
-        });
-
-        if (!finalItemCode) {
-          alert('商品CDとして使用できる数字が読み取れませんでした。読み直してください。');
-          startCooldown(4);
-          startScanner();
-          return;
-        }
-
-        if (confirm("【 商品CD 確認 】\n\n「 " + finalItemCode + " 」\n\nこの商品コードでよろしいですか？\n※違う場合はキャンセルを押して読み直してください。")) {
-          currentItemBarcode = finalItemCode; 
-          document.getElementById('display-item-code').innerText = finalItemCode;
+        
+        if (confirm("【 商品CD 確認 】\n\n「 " + code + " 」\n\nこの商品コードでよろしいですか？\n※違う場合はキャンセルを押して読み直してください。")) {
+          currentItemBarcode = code; 
+          document.getElementById('display-item-code').innerText = code;
           const imgEl = document.getElementById('captured-image');
           if (capturedSrc) { imgEl.src = capturedSrc; imgEl.style.display = 'block'; } else { imgEl.style.display = 'none'; }
           scanMode = null; 
           goToStep(5);
         } else {
+          isScanning = false;
           startCooldown(4); 
           startScanner();
         }
       }
     }
+
 
 
     function installBeforeUnloadGuard_() {
@@ -3242,7 +2619,53 @@
         }
       });
     }
-    window.addEventListener('error' , function(event) {
+
+    function installPullToRefreshGuard_() {
+      let startY = 0;
+      let startX = 0;
+
+      document.addEventListener('touchstart', function(event) {
+        if (!event.touches || event.touches.length !== 1) {
+          return;
+        }
+
+        startY = event.touches[0].clientY;
+        startX = event.touches[0].clientX;
+      }, { passive: true });
+
+      document.addEventListener('touchmove', function(event) {
+        if (!event.touches || event.touches.length !== 1) {
+          return;
+        }
+
+        const currentY = event.touches[0].clientY;
+        const currentX = event.touches[0].clientX;
+        const diffY = currentY - startY;
+        const diffX = currentX - startX;
+
+        // 横方向操作は阻害しない。
+        if (Math.abs(diffX) > Math.abs(diffY)) {
+          return;
+        }
+
+        const activeStep = document.querySelector('.step-container.active');
+        if (!activeStep) {
+          return;
+        }
+
+        const atTop = activeStep.scrollTop <= 0;
+        const atBottom = activeStep.scrollTop + activeStep.clientHeight >= activeStep.scrollHeight - 1;
+        const pullingDown = diffY > 0;
+        const pullingUp = diffY < 0;
+
+        // Chrome Android の pull-to-refresh、iOS系ブラウザのバウンスを抑止。
+        if ((atTop && pullingDown) || (atBottom && pullingUp)) {
+          event.preventDefault();
+        }
+      }, { passive: false });
+    }
+
+    window.addEventListener('error', function(event) {
       console.error(event.error || event.message);
       showFatalAuthError('画面初期化エラー: ' + (event.message || '不明なエラー'));
     });
@@ -3295,81 +2718,34 @@
 
     window.addEventListener('unhandledrejection', function(event) {
       console.error(event.reason);
-
       const message = event.reason && event.reason.message
         ? event.reason.message
         : String(event.reason);
-
-      // bootstrap/jsonpのタイムアウトは業務継続可能なため、認証エラー画面へは遷移させない。
-      if (
-        message.indexOf('確認APIタイムアウト') !== -1 ||
-        message.indexOf('ユーザー情報取得がタイムアウト') !== -1 ||
-        message.indexOf('bootstrap') !== -1
-      ) {
-        event.preventDefault();
-        setBootStatus('ユーザー情報の取得が遅延しました。認証ユーザーで続行中。', true);
-        setTimeout(function() {
-          setBootStatus('');
-        }, 5000);
-        return;
-      }
-
       showFatalAuthError('通信または初期化エラー: ' + message);
     });
 
 
-    function timeoutPromise_(ms, message) {
-      return new Promise(function(resolve, reject) {
-        setTimeout(function() {
-          reject(new Error(message));
-        }, ms);
-      });
-    }
+    const handyBootWatchdog = setTimeout(function() {
+      const boot = document.getElementById('boot-status');
+      if (boot && !boot.textContent) {
+        boot.textContent = '起動確認中... 画面が操作できない場合はChromeのサイトデータを削除してください。';
+        boot.style.color = '#b31412';
+        boot.style.fontWeight = 'bold';
+      }
+    }, 8000);
 
-    window.addEventListener('DOMContentLoaded', async function() {
+    window.addEventListener('DOMContentLoaded', function() {
       try {
+        installPullToRefreshGuard_();
         installBeforeUnloadGuard_();
 
+        // 初期表示ではGAS通信を待たない。
+        // モバイル社内回線でGAS応答読取が遅延しても、画面操作を先に可能にする。
         readAuthToken();
         applyLoginUserFromTokenFallback_();
-
-        setBootStatus('ユーザー情報を確認中...');
-
-        let bootstrapTimedOut = false;
-
-        try {
-          // Promise.raceでタイムアウトした後もbootstrapApp側のjsonpRequestは後からrejectする可能性がある。
-          // そのrejectを未処理にするとunhandledrejectionで認証エラー画面に飛ぶため、明示的にcatchして握る。
-          const bootstrapPromise = bootstrapApp().catch(function(error) {
-            if (bootstrapTimedOut) {
-              console.warn('bootstrap late error ignored:', error);
-              return null;
-            }
-
-            throw error;
-          });
-
-          await Promise.race([
-            bootstrapPromise,
-            timeoutPromise_(8000, 'ユーザー情報取得がタイムアウトしました。認証ユーザーで続行します。')
-          ]);
-
-          setBootStatus('');
-
-        } catch (bootstrapError) {
-          bootstrapTimedOut = true;
-          console.error('bootstrap startup error:', bootstrapError);
-
-          // bootstrap失敗でもtoken内ユーザーで続行する。
-          // 現場作業を止めないため、担当者selectには fallback user を残す。
-          setBootStatus('ユーザー情報の取得に失敗しました。認証ユーザーで続行中。', true);
-
-          setTimeout(function() {
-            setBootStatus('');
-          }, 5000);
-        }
-
         initQueue();
+
+        setTimeout(loadBootstrapInBackground_, 100);
 
       } catch (error) {
         console.error(error);
