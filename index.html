@@ -792,12 +792,12 @@
   </div>
 
   <div id="step6" class="step-container">
-    <h2>完了</h2>
-    <p>作業が完了しました。</p>
+    <h2 id="step6-title">送信確認</h2>
+    <p id="step6-message" style="font-weight:bold; line-height:1.6;">棚卸データの送信状態を確認しています。</p>
     <div id="queue-status-box" style="padding:15px; border-radius:6px; margin-bottom:15px; text-align:center;"></div>
     <div class="bottom-buttons">
       <button type="button" onclick="showPickHistory()">ピッキング履歴を確認</button>
-      <button onclick="resetApp()">次の作業を行う (最初に戻る)</button>
+      <button id="btn-next-work" type="button" onclick="resetApp()" disabled>次の作業を行う (最初に戻る)</button>
     </div>
   </div>
 
@@ -870,12 +870,17 @@
 
     const STORAGE_KEY = 'handy_pending_picks_v2';
     const PICK_HISTORY_KEY = 'handy_pick_history_v2';
+    const ACTIVE_WORK_SESSION_KEY = 'handy_active_work_session_v1';
     const MAX_BATCH_ITEMS = 30;
     const ACK_RETRY_COUNT = 6;
     const ACK_RETRY_INTERVAL_MS = 1200;
 
     let apiQueue = [];
     let isApiProcessing = false;
+    let currentWorkSessionId = '';
+    let finishScreenActive = false;
+    let screenWakeLock = null;
+    let wakeLockRequestInFlight = false;
 
     let lastScannedCode = "";
     let scanMatchCount = 0;
@@ -1193,6 +1198,183 @@
       return parts.join('|');
     }
 
+    function ensureCurrentWorkSessionId_() {
+      if (currentWorkSessionId) {
+        return currentWorkSessionId;
+      }
+
+      const stored = String(sessionStorage.getItem(ACTIVE_WORK_SESSION_KEY) || '').trim();
+      if (stored) {
+        currentWorkSessionId = stored;
+        return currentWorkSessionId;
+      }
+
+      currentWorkSessionId = createClientId('work');
+      sessionStorage.setItem(ACTIVE_WORK_SESSION_KEY, currentWorkSessionId);
+      return currentWorkSessionId;
+    }
+
+    function recoverWorkSessionIdFromQueue_() {
+      if (currentWorkSessionId || !Array.isArray(apiQueue) || apiQueue.length === 0) {
+        return;
+      }
+
+      const firstWithSession = apiQueue.find(function(pick) {
+        return pick && String(pick.workSessionId || '').trim();
+      });
+
+      if (firstWithSession) {
+        currentWorkSessionId = String(firstWithSession.workSessionId).trim();
+        sessionStorage.setItem(ACTIVE_WORK_SESSION_KEY, currentWorkSessionId);
+        return;
+      }
+
+      // 旧版キューにはworkSessionIdが無いため、同じ送信コンテキスト単位で救済用IDを付与する。
+      // 履歴は一度だけ読書きし、大量件数でも初期処理を重くしない。
+      const recoveryIds = {};
+      const rows = loadPickHistory();
+      const historyIndexByPickId = {};
+      let historyChanged = false;
+
+      rows.forEach(function(row, index) {
+        if (row && row.pickId) {
+          historyIndexByPickId[row.pickId] = index;
+        }
+      });
+
+      apiQueue.forEach(function(pick) {
+        if (!pick) return;
+
+        const key = queueContextKey(pick);
+        if (!recoveryIds[key]) {
+          recoveryIds[key] = createClientId('recovery');
+        }
+
+        pick.workSessionId = recoveryIds[key];
+
+        const index = historyIndexByPickId[pick.pickId];
+        if (typeof index === 'number') {
+          rows[index].workSessionId = pick.workSessionId;
+          rows[index].updatedAt = new Date().toISOString();
+          historyChanged = true;
+        }
+      });
+
+      if (historyChanged) {
+        savePickHistory(rows);
+      }
+
+      if (apiQueue[0] && apiQueue[0].workSessionId) {
+        currentWorkSessionId = String(apiQueue[0].workSessionId);
+        sessionStorage.setItem(ACTIVE_WORK_SESSION_KEY, currentWorkSessionId);
+      }
+    }
+
+    function getFinishProgress_() {
+      const rows = loadPickHistory();
+      const queueIdMap = {};
+      apiQueue.forEach(function(pick) {
+        if (pick && pick.pickId) {
+          queueIdMap[pick.pickId] = true;
+        }
+      });
+
+      let targetRows = [];
+      const sessionId = String(currentWorkSessionId || '').trim();
+
+      if (sessionId) {
+        targetRows = rows.filter(function(row) {
+          return row && String(row.workSessionId || '').trim() === sessionId;
+        });
+      } else if (apiQueue.length > 0) {
+        const contextKey = queueContextKey(apiQueue[0]);
+        targetRows = rows.filter(function(row) {
+          return row && queueContextKey(row) === contextKey;
+        });
+      }
+
+      let received = 0;
+      let registered = 0;
+      let serverErrors = 0;
+      let retrying = 0;
+
+      targetRows.forEach(function(row) {
+        const status = String(row.status || '');
+        if (status === 'RECEIVED') {
+          received++;
+        } else if (status === 'REGISTERED') {
+          registered++;
+        } else if (status === 'ERROR') {
+          if (queueIdMap[row.pickId]) {
+            retrying++;
+          } else {
+            // 端末キューから外れているERRORは、GAS受信後の登録側ERRORとして扱う。
+            serverErrors++;
+          }
+        }
+      });
+
+      const total = targetRows.length;
+      const serverReceived = received + registered + serverErrors;
+
+      return {
+        total: total,
+        serverReceived: serverReceived,
+        registered: registered,
+        serverErrors: serverErrors,
+        retrying: retrying,
+        deviceRemaining: apiQueue.length
+      };
+    }
+
+    async function acquireScreenWakeLock_() {
+      if (
+        !finishScreenActive ||
+        apiQueue.length === 0 ||
+        document.visibilityState !== 'visible' ||
+        !navigator.wakeLock ||
+        typeof navigator.wakeLock.request !== 'function' ||
+        screenWakeLock ||
+        wakeLockRequestInFlight
+      ) {
+        return;
+      }
+
+      wakeLockRequestInFlight = true;
+
+      try {
+        screenWakeLock = await navigator.wakeLock.request('screen');
+        screenWakeLock.addEventListener('release', function() {
+          screenWakeLock = null;
+        });
+      } catch (error) {
+        // Wake Lock非対応・OS制限時でも送信処理は継続する。
+        console.warn('screen wake lock unavailable:', error && error.message ? error.message : error);
+        screenWakeLock = null;
+      } finally {
+        wakeLockRequestInFlight = false;
+      }
+    }
+
+    function releaseScreenWakeLock_() {
+      const lock = screenWakeLock;
+      screenWakeLock = null;
+
+      if (lock && typeof lock.release === 'function') {
+        lock.release().catch(function() {});
+      }
+    }
+
+    function setFinishScreenActive_(active) {
+      finishScreenActive = active === true;
+
+      if (finishScreenActive && apiQueue.length > 0) {
+        acquireScreenWakeLock_();
+      } else {
+        releaseScreenWakeLock_();
+      }
+    }
+
     function loadPickHistory() {
       try {
         return JSON.parse(localStorage.getItem(PICK_HISTORY_KEY) || '[]');
@@ -1276,28 +1458,24 @@
 
     function resetStaleSendingPicks_() {
       let changed = false;
-      const now = Date.now();
 
       apiQueue.forEach(function(pick) {
         if (pick.status !== 'SENDING') {
           return;
         }
 
-        const lastTry = pick.lastTryAt ? Date.parse(pick.lastTryAt) : 0;
+        // ページ再読込後は前回のfetch/ACK待機処理は存在しない。
+        // 旧版でSENDINGのまま取り残されたデータも含め、即PENDINGへ戻して再送対象にする。
+        pick.status = 'PENDING';
+        pick.lastError = '前回の送信処理が完了確認できなかったため自動再送します。';
+        pick.lastErrorAt = new Date().toISOString();
 
-        // ブラウザ終了・再読込でSENDINGのまま残ったものは再送待機へ戻す。
-        if (!lastTry || now - lastTry > 60000) {
-          pick.status = 'ERROR';
-          pick.lastError = pick.lastError || '前回送信が中断されました。再送待機に戻します。';
-          pick.lastErrorAt = new Date().toISOString();
+        updatePickHistoryStatus(pick.pickId, 'PENDING', {
+          lastError: pick.lastError,
+          lastErrorAt: pick.lastErrorAt
+        });
 
-          updatePickHistoryStatus(pick.pickId, 'ERROR', {
-            lastError: pick.lastError,
-            lastErrorAt: pick.lastErrorAt
-          });
-
-          changed = true;
-        }
+        changed = true;
       });
 
       return changed;
@@ -1418,17 +1596,35 @@
 
     async function waitForBatchAck(batchId, pickIds) {
       let lastResult = null;
+      const targetIds = Array.from(new Set(
+        (pickIds || [])
+          .map(function(id) { return String(id || '').trim(); })
+          .filter(function(id) { return !!id; })
+      ));
 
       for (let i = 0; i < ACK_RETRY_COUNT; i++) {
         try {
-          lastResult = await checkBatchReceived(batchId, pickIds);
+          lastResult = await checkBatchReceived(batchId, targetIds);
 
           if (lastResult && lastResult.status === 'OK') {
             const received = Array.isArray(lastResult.receivedPickIds)
               ? lastResult.receivedPickIds
               : [];
 
-            if (received.length > 0) {
+            const receivedSet = {};
+            received.forEach(function(id) {
+              receivedSet[String(id)] = true;
+            });
+
+            const allReceived = targetIds.every(function(id) {
+              return receivedSet[id] === true;
+            });
+
+            // 重要:
+            // 1件でもACKが返った時点では終了しない。
+            // バッチ内の全pickIdについて受信確認が取れた時だけ完了扱いにする。
+            if (allReceived) {
+              lastResult.ackComplete = true;
               return lastResult;
             }
           }
@@ -1455,7 +1651,18 @@
         });
       }
 
-      throw new Error(lastResult && lastResult.message ? lastResult.message : 'GAS受信確認が取れませんでした。');
+      // 一部だけACKが取れている場合は、その結果を返す。
+      // 呼び出し側でACK済みだけ確定し、未ACK分だけPENDINGへ戻して再送する。
+      if (lastResult && lastResult.status === 'OK') {
+        lastResult.ackComplete = false;
+        return lastResult;
+      }
+
+      throw new Error(
+        lastResult && lastResult.message
+          ? lastResult.message
+          : 'GAS受信確認が取れませんでした。'
+      );
     }
 
     function getTokenPayload_() {
@@ -1576,15 +1783,25 @@
       const reconciled = reconcileQueueWithHistory();
       const resetStale = resetStaleSendingPicks_();
 
-      if (reconciled || resetStale) {
+      recoverWorkSessionIdFromQueue_();
+
+      if (reconciled || resetStale || apiQueue.length > 0) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(apiQueue));
+      }
+
+      if (apiQueue.length === 0) {
+        currentWorkSessionId = '';
+        sessionStorage.removeItem(ACTIVE_WORK_SESSION_KEY);
       }
 
       updateQueueUI();
 
       if (apiQueue.length > 0) {
-        // 初期表示を優先する。未送信データの再送は画面表示後に開始する。
-        setTimeout(processQueue, 5000);
+        // 前回未送信が残っている場合は、新規作業より先に送信状況を明示する。
+        // 送信自体は従来どおり1バッチずつ直列で実行する。
+        goToStep(6);
+        setBootStatus('前回の未送信データを自動送信しています。完了表示まで画面を閉じないでください。', true);
+        setTimeout(processQueue, 500);
       }
     }
 
@@ -1708,12 +1925,22 @@
         registeredIds.forEach(function(id) { registeredMap[id] = true; });
         errorIds.forEach(function(id) { errorMapById[id] = true; });
 
+        const batchPickIdSet = {};
+        batchItems.forEach(function(pick) {
+          batchPickIdSet[pick.pickId] = true;
+        });
+
+        let hasUnconfirmed = false;
+
         apiQueue = apiQueue.filter(function(pick) {
-          if (!receivedMap[pick.pickId]) {
+          // 今回のバッチ以外のキューには触れない。
+          if (!batchPickIdSet[pick.pickId]) {
             return true;
           }
 
           if (errorMapById[pick.pickId]) {
+            // 登録GAS側のERRORは「サーバーが受信済み」の終端状態。
+            // 端末から再送すると二重処理の原因になるため、端末キューからは外し、履歴にERRORを残す。
             pick.status = 'ERROR';
             pick.lastError = errorMap[pick.pickId] || '登録側エラー';
             updatePickHistoryStatus(pick.pickId, 'ERROR', {
@@ -1721,6 +1948,24 @@
               lastError: pick.lastError
             });
             updateHistoryStatus(pick.pickId, 'error', '登録側エラー');
+            return false;
+          }
+
+          if (!receivedMap[pick.pickId]) {
+            // 部分ACK時にSENDINGのまま取り残さない。
+            // 未確認分だけPENDINGへ戻し、次回はそのpickIdだけを再送する。
+            pick.status = 'PENDING';
+            pick.retryCount = Number(pick.retryCount || 0) + 1;
+            pick.lastError = 'GAS受信確認が未完了のため自動再送します。';
+            pick.lastErrorAt = new Date().toISOString();
+            hasUnconfirmed = true;
+
+            updatePickHistoryStatus(pick.pickId, 'PENDING', {
+              batchId: batchId,
+              lastError: pick.lastError,
+              lastErrorAt: pick.lastErrorAt
+            });
+            updateHistoryStatus(pick.pickId, 'saving', '受信確認待ち・自動再送');
             return true;
           }
 
@@ -1745,7 +1990,11 @@
         isApiProcessing = false;
         saveQueueToStorage();
 
-        processQueue();
+        if (hasUnconfirmed) {
+          setTimeout(processQueue, 1500);
+        } else {
+          processQueue();
+        }
 
       } catch (error) {
         const errorMessage = error && error.message
@@ -1810,41 +2059,91 @@
       const statusBox = document.getElementById('queue-status-box');
       if (!statusBox) return;
 
-      if (apiQueue.length === 0) {
-        statusBox.style.background = '#d4edda';
-        statusBox.style.borderColor = '#c3e6cb';
+      const title = document.getElementById('step6-title');
+      const message = document.getElementById('step6-message');
+      const nextButton = document.getElementById('btn-next-work');
+      const progress = getFinishProgress_();
+      const authRequired = !authToken || isAuthTokenExpired_();
+
+      if (apiQueue.length === 0 && !isApiProcessing) {
+        releaseScreenWakeLock_();
+
+        if (nextButton) nextButton.disabled = false;
+        if (title) title.textContent = progress.serverErrors > 0 ? '送信完了（要確認）' : '送信完了';
+
+        if (message) {
+          message.textContent = progress.serverErrors > 0
+            ? 'サーバーへの送信は完了しました。登録側エラーがあるため履歴を確認してください。'
+            : 'すべてのデータについてGASの受信確認が完了しました。この画面を閉じて問題ありません。';
+          message.style.color = progress.serverErrors > 0 ? '#b31412' : '#155724';
+        }
+
+        statusBox.style.background = progress.serverErrors > 0 ? '#fce8e6' : '#d4edda';
+        statusBox.style.borderColor = progress.serverErrors > 0 ? '#f5c2c7' : '#c3e6cb';
         statusBox.innerHTML = `
-          <p style="margin:0; font-size:16px; font-weight:bold; color:#155724;">✅ 端末内の未送信データはありません</p>
-          <p style="margin:6px 0 0 0; font-size:13px; color:#155724;">
-            GAS受信後、登録用GASのprocessQueueでSpreadsheetへ反映されます。
+          <p style="margin:0; font-size:18px; font-weight:bold; color:${progress.serverErrors > 0 ? '#b31412' : '#155724'};">
+            ${progress.serverErrors > 0 ? '⚠ 送信は完了しました' : '✓ 全件送信完了'}
           </p>
+          ${progress.total > 0 ? `
+            <p style="margin:8px 0 0 0; font-size:14px; color:#333; font-weight:bold;">
+              GAS受信確認済み: ${progress.serverReceived} / ${progress.total} 件
+            </p>
+          ` : ''}
+          ${progress.serverErrors > 0 ? `
+            <p style="margin:8px 0 0 0; font-size:13px; color:#b31412; font-weight:bold;">
+              登録側エラー: ${progress.serverErrors} 件
+            </p>
+          ` : `
+            <p style="margin:8px 0 0 0; font-size:13px; color:#155724;">
+              実データへの反映は登録用GASのprocessQueueがサーバー側で継続します。
+            </p>
+          `}
         `;
+
+        setBootStatus('');
         return;
       }
+
+      if (nextButton) nextButton.disabled = true;
+      if (finishScreenActive) acquireScreenWakeLock_();
 
       const pending = apiQueue.filter(function(p) { return p.status === 'PENDING'; }).length;
       const sending = apiQueue.filter(function(p) { return p.status === 'SENDING'; }).length;
       const errors = apiQueue.filter(function(p) { return p.status === 'ERROR'; }).length;
       const current = apiQueue[0] || {};
       const lastError = current.lastError || '';
-      const authRequired = !authToken || isAuthTokenExpired_();
+
+      if (title) title.textContent = authRequired ? '送信一時停止' : '送信中';
+      if (message) {
+        message.textContent = authRequired
+          ? '認証期限が切れています。未送信データは端末内に保持されています。再認証してください。'
+          : '全件のGAS受信確認が終わるまで、この画面を閉じないでください。';
+        message.style.color = authRequired ? '#b31412' : '#856404';
+      }
 
       statusBox.style.background = authRequired || errors > 0 ? '#fce8e6' : '#fff3cd';
       statusBox.style.borderColor = authRequired || errors > 0 ? '#f5c2c7' : '#ffeeba';
       statusBox.innerHTML = `
-        <p style="margin:0; font-size:16px; font-weight:bold; color:${authRequired || errors > 0 ? '#b31412' : '#856404'};">
-          未受信データ 残り <span style="font-size:20px;">${apiQueue.length}</span> 件
+        ${progress.total > 0 ? `
+          <p style="margin:0; font-size:18px; font-weight:bold; color:#333;">
+            GAS受信確認済み
+            <span style="font-size:24px;">${progress.serverReceived}</span>
+            / ${progress.total} 件
+          </p>
+        ` : ''}
+        <p style="margin:${progress.total > 0 ? '8px' : '0'} 0 0 0; font-size:16px; font-weight:bold; color:${authRequired || errors > 0 ? '#b31412' : '#856404'};">
+          端末内の未受信データ 残り <span style="font-size:22px;">${apiQueue.length}</span> 件
         </p>
         ${authRequired ? `
           <p style="margin:8px 0 0 0; font-size:13px; color:#b31412; font-weight:bold;">
-            認証期限が切れています。未送信データは端末内に保持されています。
+            認証期限切れのため送信を停止しています。データは削除されていません。
           </p>
           <button type="button" onclick="redirectToEntry()"
             style="margin-top:8px;padding:10px 14px;border:0;border-radius:6px;background:#4285f4;color:#fff;font-weight:bold;">
             再認証して送信を再開
           </button>
         ` : ''}
-        <p style="margin:6px 0 0 0; font-size:12px; color:#555; font-weight:bold;">
+        <p style="margin:8px 0 0 0; font-size:12px; color:#555; font-weight:bold;">
           未送信: ${pending} / 送信中: ${sending} / 再送待機: ${errors}
         </p>
         ${lastError ? `
@@ -1852,10 +2151,11 @@
             最終エラー: ${escapeHtmlClient(lastError).slice(0, 160)}
           </p>
         ` : ''}
-        <p style="margin:6px 0 0 0; font-size:12px; color:#856404; font-weight:bold;">
-          GAS受信確認が取れたデータだけ端末キューから削除します。
-          画面を閉じた場合は、次回入口GASから開いた時に再送します。
-        </p>
+        <div style="margin-top:12px;padding:10px;border-radius:6px;background:#fff;border:2px solid #dc3545;">
+          <p style="margin:0;font-size:14px;color:#b31412;font-weight:bold;line-height:1.5;">
+            ⚠ 「全件送信完了」と表示されるまでアプリを閉じないでください
+          </p>
+        </div>
       `;
     }
 
@@ -1875,8 +2175,15 @@
         nowIso
       );
 
+      const workSessionId = String(
+        (existingHistory && existingHistory.workSessionId) ||
+        currentWorkSessionId ||
+        ensureCurrentWorkSessionId_()
+      );
+
       const pick = {
         pickId: pickId,
+        workSessionId: workSessionId,
         batchId: '',
         jobNo: String(payload.jobNo || ''),
         person: String(payload.person || ''),
@@ -1940,16 +2247,22 @@
       }
 
       if (step === 2) {
+        setFinishScreenActive_(false);
         scanMode = 'JOB'; startCamera('video-job'); document.getElementById('manual-job-no').value = ""; startCooldown(2); 
       } else if (step === 3) {
+        setFinishScreenActive_(false);
         setupInfoScreen(); scanMode = null; 
       } else if (step === 4) {
+        setFinishScreenActive_(false);
         scanMode = 'ITEM'; currentEditId = null; startCamera('video-item'); document.getElementById('manual-item-code').value = ""; startCooldown(4); 
       } else if (step === 5) {
+        setFinishScreenActive_(false);
         isQtyReset = true; scanMode = null; 
       } else if (step === 6) {
+        setFinishScreenActive_(true);
         updateQueueUI(); scanMode = null; 
       } else {
+        setFinishScreenActive_(false);
         scanMode = null; 
       }
     }
@@ -2025,6 +2338,7 @@
         sessionData.purpose = purposeSelect.value; sessionData.purposeName = purposeSelect.options[purposeSelect.selectedIndex].text;
       }
       if (!sessionData.person) { alert("担当者情報を選択してください。"); return; }
+      ensureCurrentWorkSessionId_();
       goToStep(4);
     }
 
@@ -2136,6 +2450,16 @@
     }
 
     function resetApp() {
+      if (apiQueue.length > 0 || isApiProcessing) {
+        alert('未送信データが残っています。全件送信完了まで次の作業は開始できません。');
+        goToStep(6);
+        return;
+      }
+
+      currentWorkSessionId = '';
+      sessionStorage.removeItem(ACTIVE_WORK_SESSION_KEY);
+      setFinishScreenActive_(false);
+
       sessionData = { jobNo: "", person: loginUserName || "", purpose: "", purposeName: "" };
       historyContexts = {}; 
       
@@ -2613,9 +2937,31 @@
 
     function installBeforeUnloadGuard_() {
       window.addEventListener('beforeunload', function(event) {
-        if (apiQueue && apiQueue.length > 0) {
+        if ((apiQueue && apiQueue.length > 0) || isApiProcessing) {
+          // localStorageは同期APIなので、離脱直前にも最新キューを退避する。
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(apiQueue || []));
+          } catch (error) {}
+
           event.preventDefault();
           event.returnValue = '';
+        }
+      });
+
+      window.addEventListener('pagehide', function() {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(apiQueue || []));
+        } catch (error) {}
+        releaseScreenWakeLock_();
+      });
+
+      document.addEventListener('visibilitychange', function() {
+        if (document.visibilityState === 'visible') {
+          if (finishScreenActive && apiQueue.length > 0) {
+            acquireScreenWakeLock_();
+          }
+        } else {
+          releaseScreenWakeLock_();
         }
       });
     }
