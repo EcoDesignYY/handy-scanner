@@ -872,6 +872,7 @@
     const PICK_HISTORY_KEY = 'handy_pick_history_v2';
     const ACTIVE_WORK_SESSION_KEY = 'handy_active_work_session_v1';
     const MAX_BATCH_ITEMS = 30;
+    const SUBMIT_REQUEST_TIMEOUT_MS = 12000;
     const ACK_RETRY_COUNT = 6;
     const ACK_RETRY_INTERVAL_MS = 1200;
 
@@ -1584,6 +1585,81 @@
       });
     }
 
+    /**
+     * submit POSTを実行する。
+     *
+     * no-cors fetchは端末/回線状態によってPromiseが長時間settleしない場合があるため、
+     * AbortControllerで上限時間を設ける。
+     * タイムアウト/通信エラーでも、サーバーへ到達済みの可能性があるので、
+     * 呼び出し側は必ずcheckBatchで受信確認を行う。
+     */
+    async function sendSubmitRequest_(payload) {
+      const requestBody = JSON.stringify(Object.assign({}, payload, {
+        action: 'submit',
+        token: authToken
+      }));
+
+      const options = {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'text/plain'
+        },
+        body: requestBody
+      };
+
+      // 現行iOS/AndroidではAbortControllerを利用する。
+      if (typeof AbortController === 'function') {
+        const controller = new AbortController();
+        const timer = setTimeout(function() {
+          try { controller.abort(); } catch (e) {}
+        }, SUBMIT_REQUEST_TIMEOUT_MS);
+
+        options.signal = controller.signal;
+
+        try {
+          await fetch(API_URL, options);
+          return { ok: true, timedOut: false, error: '' };
+        } catch (error) {
+          const timedOut = error && error.name === 'AbortError';
+          return {
+            ok: false,
+            timedOut: timedOut,
+            error: timedOut
+              ? 'submit POSTがタイムアウトしました。'
+              : (error && error.message ? error.message : String(error))
+          };
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      // AbortController非対応端末向け。fetch自体は残る可能性があるが、
+      // UI処理だけはタイムアウトさせてACK確認へ進める。
+      return Promise.race([
+        fetch(API_URL, options)
+          .then(function() {
+            return { ok: true, timedOut: false, error: '' };
+          })
+          .catch(function(error) {
+            return {
+              ok: false,
+              timedOut: false,
+              error: error && error.message ? error.message : String(error)
+            };
+          }),
+        new Promise(function(resolve) {
+          setTimeout(function() {
+            resolve({
+              ok: false,
+              timedOut: true,
+              error: 'submit POSTがタイムアウトしました。'
+            });
+          }, SUBMIT_REQUEST_TIMEOUT_MS);
+        })
+      ]);
+    }
+
     function checkBatchReceived(batchId, pickIds) {
       const url = API_URL +
         '?action=checkBatch' +
@@ -1864,9 +1940,14 @@
         pick.status = 'SENDING';
         pick.lastTryAt = now;
         pick.retryCount = Number(pick.retryCount || 0);
+        // 前回試行のエラー表示を残したまま新しい送信を開始しない。
+        pick.lastError = '';
+        pick.lastErrorAt = '';
         updatePickHistoryStatus(pick.pickId, 'SENDING', {
           batchId: batchId,
-          lastTryAt: now
+          lastTryAt: now,
+          lastError: '',
+          lastErrorAt: ''
         });
         updateHistoryStatus(pick.pickId, 'saving', '送信中...');
       });
@@ -1895,17 +1976,22 @@
       };
 
       try {
-        await fetch(API_URL, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: {
-            'Content-Type': 'text/plain'
-          },
-          body: JSON.stringify(Object.assign({}, payload, {
-            action: 'submit',
-            token: authToken
-          }))
-        });
+        const submitResult = await sendSubmitRequest_(payload);
+
+        // POST応答が取得できなくても、GAS側では受信済みの可能性がある。
+        // ここでは失敗確定にせず、必ずcheckBatchへ進む。
+        if (!submitResult.ok) {
+          console.warn('submit transport uncertain:', submitResult.error);
+          batchItems.forEach(function(pick) {
+            updateHistoryStatus(
+              pick.pickId,
+              'saving',
+              submitResult.timedOut
+                ? '送信応答タイムアウト・GAS受信確認中...'
+                : '送信応答不明・GAS受信確認中...'
+            );
+          });
+        }
 
         const pickIds = batchItems.map(function(pick) {
           return pick.pickId;
