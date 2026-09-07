@@ -1186,15 +1186,13 @@
         pick.purposeName || ''
       ];
 
-      // 棚卸だけは実施日単位でバッチを分離する。
-      // 翌日再送でも元の棚卸日のtanalogへ登録するため。
-      if (String(pick.purposeName || '') === '棚卸') {
-        parts.push(
-          getOperationDateKey_(
-            pick.operationAt || pick.createdAt || ''
-          )
-        );
-      }
+      // 入庫・出庫・棚卸すべて作業日単位でバッチを分離する。
+      // 翌日再送でも元の作業日のA1 / A11 / tanalogへ登録するため。
+      parts.push(
+        getOperationDateKey_(
+          pick.operationAt || pick.createdAt || ''
+        )
+      );
 
       return parts.join('|');
     }
