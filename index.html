@@ -675,12 +675,68 @@
     .pick-status-received { color: #1a73e8; font-weight: bold; }
     .pick-status-registered { color: #0b8043; font-weight: bold; }
     .pick-status-error { color: #b31412; font-weight: bold; }
+    .pick-status-retry-required { color: #b31412; font-weight: bold; }
+    .pick-status-unknown { color: #6a1b9a; font-weight: bold; }
+
+    .pick-history-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .pick-history-actions button {
+      flex: 1 1 95px;
+      min-width: 0;
+      padding: 8px 6px;
+      font-size: 12px;
+      border-radius: 6px;
+    }
+
+    .pick-history-actions button.danger-small {
+      background: #dc3545;
+      color: #fff;
+    }
+
+    #global-history-button {
+      position: fixed;
+      top: 70px;
+      right: 10px;
+      z-index: 9000;
+      width: auto;
+      min-width: 74px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: #1a73e8;
+      color: #fff;
+      border: 2px solid #fff;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+      font-size: 13px;
+      font-weight: bold;
+    }
+
+    #history-alert-badge {
+      display: none;
+      margin-left: 5px;
+      min-width: 18px;
+      height: 18px;
+      line-height: 18px;
+      padding: 0 4px;
+      border-radius: 9px;
+      background: #d93025;
+      color: #fff;
+      font-size: 11px;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
 
   <h1>スマホハンディ</h1>
   <div id="boot-status" style="font-size:12px; color:#666; text-align:center; margin:-8px 0 8px 0;"></div>
+  <button id="global-history-button" type="button" onclick="showPickHistory()">
+    履歴<span id="history-alert-badge"></span>
+  </button>
 
   <div id="step1" class="step-container active">
     <h2>JOB NO. はありますか？</h2>
@@ -870,14 +926,18 @@
 
     const STORAGE_KEY = 'handy_pending_picks_v2';
     const PICK_HISTORY_KEY = 'handy_pick_history_v2';
+    const HIDDEN_HISTORY_KEY = 'handy_hidden_history_v1';
     const ACTIVE_WORK_SESSION_KEY = 'handy_active_work_session_v1';
     const MAX_BATCH_ITEMS = 30;
+    const MAX_AUTO_RETRY_COUNT = 3;
     const SUBMIT_REQUEST_TIMEOUT_MS = 12000;
     const ACK_RETRY_COUNT = 6;
     const ACK_RETRY_INTERVAL_MS = 1200;
 
     let apiQueue = [];
     let isApiProcessing = false;
+    let activeBatchPickIds = {};
+    let serverHistorySyncPromise = null;
     let currentWorkSessionId = '';
     let finishScreenActive = false;
     let screenWakeLock = null;
@@ -1296,20 +1356,24 @@
       let registered = 0;
       let serverErrors = 0;
       let retrying = 0;
+      let manualRetryRequired = 0;
 
       targetRows.forEach(function(row) {
-        const status = String(row.status || '');
+        const status = getEffectiveHistoryStatus_(row);
         if (status === 'RECEIVED') {
           received++;
         } else if (status === 'REGISTERED') {
           registered++;
+        } else if (status === 'SERVER_ERROR') {
+          serverErrors++;
         } else if (status === 'ERROR') {
           if (queueIdMap[row.pickId]) {
             retrying++;
           } else {
-            // 端末キューから外れているERRORは、GAS受信後の登録側ERRORとして扱う。
-            serverErrors++;
+            manualRetryRequired++;
           }
+        } else if (status === 'RETRY_REQUIRED' || status === 'UNKNOWN') {
+          manualRetryRequired++;
         }
       });
 
@@ -1322,6 +1386,7 @@
         registered: registered,
         serverErrors: serverErrors,
         retrying: retrying,
+        manualRetryRequired: manualRetryRequired,
         deviceRemaining: apiQueue.length
       };
     }
@@ -1374,21 +1439,75 @@
       }
     }
 
+    function loadHiddenHistoryIds_() {
+      try {
+        const values = JSON.parse(localStorage.getItem(HIDDEN_HISTORY_KEY) || '[]');
+        return Array.isArray(values) ? values.map(String) : [];
+      } catch (error) {
+        return [];
+      }
+    }
+
+    function saveHiddenHistoryIds_(ids) {
+      const unique = Array.from(new Set((ids || []).map(String).filter(Boolean))).slice(-1000);
+      localStorage.setItem(HIDDEN_HISTORY_KEY, JSON.stringify(unique));
+    }
+
+    function isHistoryHidden_(pickId) {
+      const target = String(pickId || '');
+      return loadHiddenHistoryIds_().indexOf(target) !== -1;
+    }
+
+    function hideHistoryPickId_(pickId) {
+      const target = String(pickId || '');
+      if (!target) return;
+      const ids = loadHiddenHistoryIds_();
+      if (ids.indexOf(target) === -1) {
+        ids.push(target);
+        saveHiddenHistoryIds_(ids);
+      }
+    }
+
+    function unhideHistoryPickId_(pickId) {
+      const target = String(pickId || '');
+      const ids = loadHiddenHistoryIds_().filter(function(id) {
+        return id !== target;
+      });
+      saveHiddenHistoryIds_(ids);
+    }
+
     function loadPickHistory() {
       try {
-        return JSON.parse(localStorage.getItem(PICK_HISTORY_KEY) || '[]');
+        const rows = JSON.parse(localStorage.getItem(PICK_HISTORY_KEY) || '[]');
+        if (!Array.isArray(rows)) return [];
+        const hidden = {};
+        loadHiddenHistoryIds_().forEach(function(id) { hidden[id] = true; });
+        return rows.filter(function(row) {
+          return row && !hidden[String(row.pickId || '')];
+        });
       } catch (error) {
         return [];
       }
     }
 
     function savePickHistory(rows) {
+      const hidden = {};
+      loadHiddenHistoryIds_().forEach(function(id) { hidden[id] = true; });
+
       // 端末肥大化防止。直近500件だけ保持。
-      const trimmed = rows.slice(-500);
+      const trimmed = (rows || [])
+        .filter(function(row) {
+          return row && !hidden[String(row.pickId || '')];
+        })
+        .slice(-500);
+
       localStorage.setItem(PICK_HISTORY_KEY, JSON.stringify(trimmed));
+      updateHistoryAccessUI_();
     }
 
     function upsertPickHistory(pick) {
+      if (!pick || !pick.pickId || isHistoryHidden_(pick.pickId)) return;
+
       const rows = loadPickHistory();
       const index = rows.findIndex(function(row) {
         return row.pickId === pick.pickId;
@@ -1408,6 +1527,8 @@
     }
 
     function updatePickHistoryStatus(pickId, status, extra) {
+      if (isHistoryHidden_(pickId)) return;
+
       const rows = loadPickHistory();
       const index = rows.findIndex(function(row) {
         return row.pickId === pickId;
@@ -1425,6 +1546,30 @@
       savePickHistory(rows);
     }
 
+    function getQueueItemByPickId_(pickId) {
+      const target = String(pickId || '');
+      return apiQueue.find(function(pick) {
+        return String(pick && pick.pickId || '') === target;
+      }) || null;
+    }
+
+    function isPickActive_(pickId) {
+      return activeBatchPickIds[String(pickId || '')] === true;
+    }
+
+    function inferPurposeFromHistory_(row) {
+      const explicit = String(row && row.purpose || '').trim();
+      if (explicit) return explicit;
+
+      const jobNo = String(row && row.jobNo || '').trim();
+      if (jobNo && jobNo !== 'なし') return jobNo;
+
+      const purposeName = String(row && row.purposeName || '').trim();
+      if (purposeName === 'その他出庫' || purposeName === 'その他入庫') return 'UNONJ1111';
+      if (purposeName === '開発出庫' || purposeName === '開発入庫') return 'UDVLP1111';
+      if (purposeName === '棚卸') return '棚卸';
+      return '';
+    }
 
     function getHistoryStatusMap_() {
       const rows = loadPickHistory();
@@ -1440,16 +1585,26 @@
     }
 
     function reconcileQueueWithHistory() {
-      const statusMap = getHistoryStatusMap_();
+      const rows = loadPickHistory();
+      const historyMap = {};
+      rows.forEach(function(row) {
+        if (row && row.pickId) historyMap[row.pickId] = row;
+      });
 
       const before = apiQueue.length;
 
       apiQueue = apiQueue.filter(function(pick) {
-        const status = statusMap[pick.pickId];
+        const row = historyMap[pick.pickId] || {};
+        const status = String(row.status || '');
+        const serverStatus = String(row.serverStatus || '');
 
-        // GAS受信済みまたは登録済みなら、端末側の未受信キューからは削除してよい。
-        // ここが無いと、履歴は登録済みなのに「未受信データ 残り1件」が残る。
-        return !(status === 'RECEIVED' || status === 'REGISTERED');
+        // GAS受信済み・登録済み・登録側ERRORは端末の自動送信キューから外す。
+        // SERVER ERRORは履歴から手動で再送する。
+        return !(
+          status === 'RECEIVED' ||
+          status === 'REGISTERED' ||
+          serverStatus === 'ERROR'
+        );
       });
 
       return before !== apiQueue.length;
@@ -1464,14 +1619,15 @@
         }
 
         // ページ再読込後は前回のfetch/ACK待機処理は存在しない。
-        // 旧版でSENDINGのまま取り残されたデータも含め、即PENDINGへ戻して再送対象にする。
+        // SENDINGのまま取り残されたデータは即PENDINGへ戻して再送対象にする。
         pick.status = 'PENDING';
         pick.lastError = '前回の送信処理が完了確認できなかったため自動再送します。';
         pick.lastErrorAt = new Date().toISOString();
 
         updatePickHistoryStatus(pick.pickId, 'PENDING', {
           lastError: pick.lastError,
-          lastErrorAt: pick.lastErrorAt
+          lastErrorAt: pick.lastErrorAt,
+          serverStatus: ''
         });
 
         changed = true;
@@ -1480,12 +1636,40 @@
       return changed;
     }
 
+    function getEffectiveHistoryStatus_(row) {
+      if (!row) return 'UNKNOWN';
+
+      const queuePick = getQueueItemByPickId_(row.pickId);
+      if (queuePick) {
+        return String(queuePick.status || 'PENDING');
+      }
+
+      const serverStatus = String(row.serverStatus || '').trim();
+      if (serverStatus === 'RECEIVED') return 'RECEIVED';
+      if (serverStatus === 'REGISTERED') return 'REGISTERED';
+      if (serverStatus === 'ERROR') return 'SERVER_ERROR';
+
+      const status = String(row.status || '').trim();
+      if (status === 'RECEIVED' || status === 'REGISTERED') return status;
+      if (status === 'RETRY_REQUIRED') return 'RETRY_REQUIRED';
+
+      // キューに存在しないPENDING/SENDING/ERRORは、端末履歴だけ古く残った可能性がある。
+      if (status === 'PENDING' || status === 'SENDING' || status === 'ERROR') {
+        return 'UNKNOWN';
+      }
+
+      return status || 'UNKNOWN';
+    }
+
     function statusLabel(status) {
       if (status === 'PENDING') return '端末内未送信';
       if (status === 'SENDING') return '送信中';
       if (status === 'RECEIVED') return 'GAS受信済み';
       if (status === 'REGISTERED') return '登録済み';
-      if (status === 'ERROR') return 'エラー';
+      if (status === 'ERROR') return '再送待機';
+      if (status === 'SERVER_ERROR') return '登録側エラー';
+      if (status === 'RETRY_REQUIRED') return '要手動再送';
+      if (status === 'UNKNOWN') return '状態不明';
       return status || '';
     }
 
@@ -1494,13 +1678,56 @@
       if (status === 'SENDING') return 'pick-status-sending';
       if (status === 'RECEIVED') return 'pick-status-received';
       if (status === 'REGISTERED') return 'pick-status-registered';
-      if (status === 'ERROR') return 'pick-status-error';
+      if (status === 'ERROR' || status === 'SERVER_ERROR') return 'pick-status-error';
+      if (status === 'RETRY_REQUIRED') return 'pick-status-retry-required';
+      if (status === 'UNKNOWN') return 'pick-status-unknown';
       return '';
+    }
+
+    function updateHistoryAccessUI_() {
+      const button = document.getElementById('global-history-button');
+      const badge = document.getElementById('history-alert-badge');
+      if (!button || !badge) return;
+
+      let attentionCount = 0;
+      loadPickHistory().forEach(function(row) {
+        const status = getEffectiveHistoryStatus_(row);
+        if (
+          status === 'PENDING' ||
+          status === 'SENDING' ||
+          status === 'ERROR' ||
+          status === 'SERVER_ERROR' ||
+          status === 'RETRY_REQUIRED' ||
+          status === 'UNKNOWN'
+        ) {
+          attentionCount++;
+        }
+      });
+
+      if (attentionCount > 0) {
+        badge.textContent = String(attentionCount > 99 ? '99+' : attentionCount);
+        badge.style.display = 'inline-block';
+        button.title = '要確認データ ' + attentionCount + ' 件';
+      } else {
+        badge.textContent = '';
+        badge.style.display = 'none';
+        button.title = 'ピッキング履歴';
+      }
     }
 
     function showPickHistory() {
       renderPickHistory();
       document.getElementById('pick-history-modal').style.display = 'flex';
+
+      // 履歴を開くたびにサーバー状態を静かに同期する。
+      // 端末履歴だけSENDING/ERRORのまま残る状態を減らす。
+      syncServerHistory_({ silent: true })
+        .catch(function(error) {
+          console.warn('history auto sync failed:', error && error.message ? error.message : error);
+        })
+        .finally(function() {
+          renderPickHistory();
+        });
     }
 
     function closePickHistory() {
@@ -1515,22 +1742,36 @@
 
       const rows = loadPickHistory().slice().reverse();
       const pendingCount = apiQueue.length;
+      const manualCount = rows.filter(function(row) {
+        const status = getEffectiveHistoryStatus_(row);
+        return status === 'RETRY_REQUIRED' || status === 'UNKNOWN' || status === 'SERVER_ERROR';
+      }).length;
 
-      summary.innerHTML = '端末内未送信: <strong>' + pendingCount + '</strong> 件 / 表示: 直近 ' + rows.length + ' 件';
+      summary.innerHTML =
+        '端末内送信待ち: <strong>' + pendingCount + '</strong> 件' +
+        ' / 要確認: <strong>' + manualCount + '</strong> 件' +
+        ' / 表示: 直近 ' + rows.length + ' 件';
 
       if (rows.length === 0) {
         list.innerHTML = '<div style="padding:12px; color:#666;">履歴はありません。</div>';
+        updateHistoryAccessUI_();
         return;
       }
 
       list.innerHTML = rows.map(function(row) {
-        const status = row.status || 'PENDING';
+        const status = getEffectiveHistoryStatus_(row);
         const qtyText = row.isDelete ? '削除' : ('数量: ' + escapeHtmlClient(row.qty));
         const historyTime = row.operationAt || row.createdAt || '';
         const historyDate = parseHandyDate_(historyTime);
         const timeText = historyDate
           ? historyDate.toLocaleString('ja-JP')
           : String(historyTime || '');
+        const pickId = String(row.pickId || '');
+        const safePickId = escapeHtmlClient(pickId);
+        const canResend = [
+          'PENDING', 'SENDING', 'ERROR', 'SERVER_ERROR', 'RETRY_REQUIRED', 'UNKNOWN'
+        ].indexOf(status) !== -1;
+        const canCancel = canResend;
 
         return `
           <div class="pick-history-row">
@@ -1548,9 +1789,16 @@
               ${row.batchId ? ' / batch: ' + escapeHtmlClient(row.batchId) : ''}
             </div>
             ${row.lastError ? '<div class="pick-history-sub pick-status-error">最終エラー: ' + escapeHtmlClient(row.lastError) + '</div>' : ''}
+            <div class="pick-history-actions">
+              <button type="button" onclick="checkHistoryItemServerStatus('${safePickId}')">サーバー確認</button>
+              ${canResend ? '<button type="button" onclick="forceResendHistoryItem(\'' + safePickId + '\')">強制再送</button>' : ''}
+              ${canCancel ? '<button type="button" class="danger-small" onclick="cancelHistoryItem(\'' + safePickId + '\')">取消</button>' : ''}
+            </div>
           </div>
         `;
       }).join('');
+
+      updateHistoryAccessUI_();
     }
 
     function jsonpRequest(url, timeoutMs) {
@@ -1785,39 +2033,54 @@
       }
     }
 
-    function refreshServerHistory() {
+    function syncServerHistory_(options) {
+      const opts = options || {};
+
       if (!authToken || isAuthTokenExpired_()) {
-        alert('認証期限が切れています。入口GASから開き直してください。');
-        return;
+        return Promise.reject(new Error('認証期限が切れています。入口GASから開き直してください。'));
+      }
+
+      // 同じタイミングの履歴同期を重複実行しない。
+      if (serverHistorySyncPromise) {
+        return serverHistorySyncPromise;
       }
 
       const url = API_URL +
         '?action=myHistory' +
-        '&limit=100' +
+        '&limit=500' +
         '&token=' + encodeURIComponent(authToken);
 
-      jsonpRequest(url, 15000)
+      serverHistorySyncPromise = jsonpRequest(url, 15000)
         .then(function(result) {
           if (!result || result.status !== 'OK') {
             throw new Error(result && result.message ? result.message : '履歴取得エラー');
           }
 
           const rows = loadPickHistory();
+          const hidden = {};
+          loadHiddenHistoryIds_().forEach(function(id) { hidden[id] = true; });
+          const checkedAt = new Date().toISOString();
 
           (result.items || []).forEach(function(item) {
+            const pickId = String(item.pickId || '');
+            if (!pickId || hidden[pickId]) return;
+
             const index = rows.findIndex(function(row) {
-              return row.pickId === item.pickId;
+              return row.pickId === pickId;
             });
 
             const mapped = {
-              pickId: item.pickId,
+              pickId: pickId,
               batchId: item.batchId,
               barcode: item.barcode,
               qty: item.qty,
               person: item.person,
               purposeName: item.purposeName,
               jobNo: item.jobNo,
+              isDelete: item.isDelete === true,
               status: item.status,
+              serverStatus: item.status,
+              serverCheckedAt: checkedAt,
               operationAt: item.operationAt || item.receivedAt || '',
               createdAt: item.operationAt || item.receivedAt || new Date().toISOString(),
               receivedAt: item.receivedAt || '',
@@ -1838,10 +2101,224 @@
           }
 
           renderPickHistory();
+          updateHistoryAccessUI_();
+          return result;
+        })
+        .finally(function() {
+          serverHistorySyncPromise = null;
+        });
+
+      return serverHistorySyncPromise;
+    }
+
+    function refreshServerHistory() {
+      syncServerHistory_({ silent: false })
+        .then(function() {
+          alert('サーバー履歴を更新しました。');
         })
         .catch(function(error) {
           alert('サーバー履歴の取得に失敗しました: ' + error.message);
         });
+    }
+
+    function checkHistoryItemServerStatus(pickId) {
+      const target = String(pickId || '');
+      if (!target) return;
+
+      syncServerHistory_({ silent: true })
+        .then(function(result) {
+          const serverItem = (result.items || []).find(function(item) {
+            return String(item.pickId || '') === target;
+          });
+
+          if (serverItem) {
+            alert(
+              'サーバー状態: ' + statusLabel(
+                serverItem.status === 'ERROR' ? 'SERVER_ERROR' : serverItem.status
+              )
+            );
+            return;
+          }
+
+          const queuePick = getQueueItemByPickId_(target);
+          if (queuePick) {
+            alert('サーバー側ではまだ受信確認できません。端末内にデータが残っているため、強制再送できます。');
+            return;
+          }
+
+          updatePickHistoryStatus(target, 'UNKNOWN', {
+            serverStatus: '',
+            serverCheckedAt: new Date().toISOString()
+          });
+          renderPickHistory();
+          alert('サーバー側に該当データが見つかりません。必要であれば「強制再送」を実行してください。');
+        })
+        .catch(function(error) {
+          alert('サーバー確認に失敗しました: ' + error.message);
+        });
+    }
+
+    function buildQueuePickFromHistory_(row) {
+      const operationAt = String(row.operationAt || row.createdAt || new Date().toISOString());
+      const purpose = inferPurposeFromHistory_(row);
+      const person = String(row.person || loginUserName || '').trim();
+      const purposeName = String(row.purposeName || '').trim();
+      const barcode = String(row.barcode || '').trim();
+      const qty = Number(row.qty);
+
+      if (!barcode) {
+        throw new Error('商品CDが履歴に残っていないため再送できません。');
+      }
+      if (!purposeName) {
+        throw new Error('使用目的が履歴に残っていないため再送できません。');
+      }
+      if (!person) {
+        throw new Error('担当者が履歴に残っていないため再送できません。');
+      }
+      if (!Number.isFinite(qty)) {
+        throw new Error('数量が不正なため再送できません。');
+      }
+
+      return {
+        pickId: String(row.pickId || ''),
+        workSessionId: String(row.workSessionId || currentWorkSessionId || ensureCurrentWorkSessionId_()),
+        batchId: '',
+        jobNo: String(row.jobNo || ''),
+        person: person,
+        purpose: purpose,
+        purposeName: purposeName,
+        barcode: barcode,
+        qty: qty,
+        isDelete: row.isDelete === true,
+        status: 'PENDING',
+        retryCount: 0,
+        lastError: '',
+        lastErrorAt: '',
+        operationAt: operationAt,
+        createdAt: String(row.createdAt || operationAt),
+        serverStatus: ''
+      };
+    }
+
+    function forceResendHistoryItem(pickId) {
+      const target = String(pickId || '');
+      const rows = loadPickHistory();
+      const row = rows.find(function(item) {
+        return String(item.pickId || '') === target;
+      });
+
+      if (!row) {
+        alert('対象履歴が見つかりません。');
+        return;
+      }
+
+      const status = getEffectiveHistoryStatus_(row);
+      if (status === 'RECEIVED' || status === 'REGISTERED') {
+        alert('このデータはサーバー受信済みのため強制再送できません。');
+        return;
+      }
+
+      const wasActive = isPickActive_(target);
+
+      if (!confirm(
+        (wasActive
+          ? '現在の送信確認を無効化して、同じpickIdで再送予約します。\n'
+          : '') +
+        'このデータを元の作業日時のまま強制再送しますか？'
+      )) {
+        return;
+      }
+
+      try {
+        unhideHistoryPickId_(target);
+
+        let pick = getQueueItemByPickId_(target);
+        if (pick) {
+          pick.status = 'PENDING';
+          pick.batchId = '';
+          pick.retryCount = 0;
+          pick.lastError = '';
+          pick.lastErrorAt = '';
+          pick.serverStatus = '';
+        } else {
+          pick = buildQueuePickFromHistory_(row);
+          apiQueue.push(pick);
+        }
+
+        updatePickHistoryStatus(target, 'PENDING', {
+          batchId: '',
+          retryCount: 0,
+          lastError: '',
+          lastErrorAt: '',
+          serverStatus: '',
+          manualResendAt: new Date().toISOString()
+        });
+
+        saveQueueToStorage();
+        renderPickHistory();
+
+        if (!authToken || isAuthTokenExpired_()) {
+          alert('再送データを端末内に復旧しました。認証期限が切れているため、入口GASから再認証すると送信を開始します。');
+          return;
+        }
+
+        processQueue();
+      } catch (error) {
+        alert('強制再送の準備に失敗しました: ' + error.message);
+      }
+    }
+
+    function cancelHistoryItem(pickId) {
+      const target = String(pickId || '');
+      const rows = loadPickHistory();
+      const row = rows.find(function(item) {
+        return String(item.pickId || '') === target;
+      });
+
+      if (!row) {
+        alert('対象履歴が見つかりません。');
+        return;
+      }
+
+      const status = getEffectiveHistoryStatus_(row);
+      if (status === 'RECEIVED' || status === 'REGISTERED') {
+        alert('サーバー受信済み・登録済みデータは履歴画面から取り消せません。');
+        return;
+      }
+
+      if (isPickActive_(target)) {
+        alert('現在送信中の通信は途中取消できません。サーバー確認後に再度操作してください。');
+        return;
+      }
+
+      if (!confirm(
+        'このデータを端末の再送対象と履歴表示から取り消しますか？\n\n' +
+        '※ サーバー受信ログや、すでにサーバーへ到達した実データを削除する操作ではありません。'
+      )) {
+        return;
+      }
+
+      apiQueue = apiQueue.filter(function(pick) {
+        return String(pick && pick.pickId || '') !== target;
+      });
+
+      hideHistoryPickId_(target);
+      const remainingRows = loadPickHistory().filter(function(item) {
+        return String(item.pickId || '') !== target;
+      });
+      savePickHistory(remainingRows);
+
+      const li = document.getElementById(target);
+      if (li) li.remove();
+      delete historyContexts[target];
+
+      saveQueueToStorage();
+      renderPickHistory();
+
+      if (apiQueue.length === 0) {
+        isApiProcessing = false;
+        updateQueueUI();
+      }
     }
 
     function initQueue() {
@@ -1882,6 +2359,7 @@
     function saveQueueToStorage() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(apiQueue));
       updateQueueUI();
+      updateHistoryAccessUI_();
     }
 
     function getNextBatch() {
@@ -1900,6 +2378,24 @@
           return queueContextKey(pick) === key;
         })
         .slice(0, MAX_BATCH_ITEMS);
+    }
+
+    function movePickToManualRetry_(pick, errorMessage, batchId) {
+      if (!pick) return;
+
+      pick.status = 'RETRY_REQUIRED';
+      pick.lastError = String(errorMessage || '自動再送上限に達しました。');
+      pick.lastErrorAt = new Date().toISOString();
+
+      updatePickHistoryStatus(pick.pickId, 'RETRY_REQUIRED', {
+        batchId: batchId || pick.batchId || '',
+        retryCount: Number(pick.retryCount || 0),
+        lastError: pick.lastError,
+        lastErrorAt: pick.lastErrorAt,
+        serverStatus: ''
+      });
+
+      updateHistoryStatus(pick.pickId, 'error', '要手動再送');
     }
 
     async function processQueue() {
@@ -1933,7 +2429,10 @@
       const batchId = createClientId('batch');
       const now = new Date().toISOString();
 
+      activeBatchPickIds = {};
+
       batchItems.forEach(function(pick) {
+        activeBatchPickIds[pick.pickId] = true;
         pick.batchId = batchId;
         pick.status = 'SENDING';
         pick.lastTryAt = now;
@@ -1941,11 +2440,13 @@
         // 前回試行のエラー表示を残したまま新しい送信を開始しない。
         pick.lastError = '';
         pick.lastErrorAt = '';
+        pick.serverStatus = '';
         updatePickHistoryStatus(pick.pickId, 'SENDING', {
           batchId: batchId,
           lastTryAt: now,
           lastError: '',
-          lastErrorAt: ''
+          lastErrorAt: '',
+          serverStatus: ''
         });
         updateHistoryStatus(pick.pickId, 'saving', '送信中...');
       });
@@ -2017,8 +2518,9 @@
         let hasUnconfirmed = false;
 
         apiQueue = apiQueue.filter(function(pick) {
-          // 今回のバッチ以外のキューには触れない。
-          if (!batchPickIdSet[pick.pickId]) {
+          // 今回のバッチ以外、または手動再送でbatchIdが更新されたキューには触れない。
+          // 古い非同期ACKが新しい再送予約を消さないための世代チェック。
+          if (!batchPickIdSet[pick.pickId] || String(pick.batchId || '') !== batchId) {
             return true;
           }
 
@@ -2029,7 +2531,8 @@
             pick.lastError = errorMap[pick.pickId] || '登録側エラー';
             updatePickHistoryStatus(pick.pickId, 'ERROR', {
               batchId: batchId,
-              lastError: pick.lastError
+              lastError: pick.lastError,
+              serverStatus: 'ERROR'
             });
             updateHistoryStatus(pick.pickId, 'error', '登録側エラー');
             return false;
@@ -2037,17 +2540,29 @@
 
           if (!receivedMap[pick.pickId]) {
             // 部分ACK時にSENDINGのまま取り残さない。
-            // 未確認分だけPENDINGへ戻し、次回はそのpickIdだけを再送する。
-            pick.status = 'PENDING';
             pick.retryCount = Number(pick.retryCount || 0) + 1;
+
+            if (pick.retryCount >= MAX_AUTO_RETRY_COUNT) {
+              movePickToManualRetry_(
+                pick,
+                'GAS受信確認が取れない状態が続いたため、自動再送を停止しました。履歴から強制再送してください。',
+                batchId
+              );
+              return false;
+            }
+
+            // 上限未満は未確認分だけPENDINGへ戻し、自動再送する。
+            pick.status = 'PENDING';
             pick.lastError = 'GAS受信確認が未完了のため自動再送します。';
             pick.lastErrorAt = new Date().toISOString();
             hasUnconfirmed = true;
 
             updatePickHistoryStatus(pick.pickId, 'PENDING', {
               batchId: batchId,
+              retryCount: pick.retryCount,
               lastError: pick.lastError,
-              lastErrorAt: pick.lastErrorAt
+              lastErrorAt: pick.lastErrorAt,
+              serverStatus: ''
             });
             updateHistoryStatus(pick.pickId, 'saving', '受信確認待ち・自動再送');
             return true;
@@ -2057,7 +2572,8 @@
 
           updatePickHistoryStatus(pick.pickId, nextStatus, {
             batchId: batchId,
-            receivedAt: new Date().toISOString()
+            receivedAt: new Date().toISOString(),
+            serverStatus: nextStatus
           });
 
           if (pick.isDelete) {
@@ -2072,6 +2588,7 @@
         });
 
         isApiProcessing = false;
+        activeBatchPickIds = {};
         saveQueueToStorage();
 
         if (hasUnconfirmed) {
@@ -2089,6 +2606,8 @@
           // 認証切れでは送信データをERROR扱いしない。
           // PENDINGへ戻してlocalStorageに保持し、再認証後に同じpickIdで再送する。
           batchItems.forEach(function(pick) {
+            if (String(pick.batchId || '') !== batchId) return;
+
             pick.status = 'PENDING';
             pick.lastError = '認証期限切れのため送信を一時停止しています。';
             pick.lastErrorAt = new Date().toISOString();
@@ -2105,37 +2624,67 @@
           sessionStorage.removeItem(TOKEN_STORAGE_KEY);
           authToken = '';
           isApiProcessing = false;
+          activeBatchPickIds = {};
           saveQueueToStorage();
           console.warn('batch paused by auth expiry:', errorMessage);
           return;
         }
 
+        const failedBatchIds = {};
         batchItems.forEach(function(pick) {
-          pick.status = 'ERROR';
+          failedBatchIds[pick.pickId] = true;
+        });
+
+        let hasAutoRetry = false;
+        let maxRetryCount = 1;
+
+        apiQueue = apiQueue.filter(function(pick) {
+          if (!failedBatchIds[pick.pickId] || String(pick.batchId || '') !== batchId) {
+            return true;
+          }
+
           pick.retryCount = Number(pick.retryCount || 0) + 1;
+          maxRetryCount = Math.max(maxRetryCount, pick.retryCount);
+
+          if (pick.retryCount >= MAX_AUTO_RETRY_COUNT) {
+            movePickToManualRetry_(
+              pick,
+              errorMessage + ' / 自動再送上限に達したため履歴から強制再送してください。',
+              batchId
+            );
+            return false;
+          }
+
+          pick.status = 'ERROR';
           pick.lastError = errorMessage;
           pick.lastErrorAt = new Date().toISOString();
+          hasAutoRetry = true;
 
           updatePickHistoryStatus(pick.pickId, 'ERROR', {
             batchId: batchId,
+            retryCount: pick.retryCount,
             lastError: pick.lastError,
-            lastErrorAt: pick.lastErrorAt
+            lastErrorAt: pick.lastErrorAt,
+            serverStatus: ''
           });
 
           updateHistoryStatus(pick.pickId, 'error', '再送待機中');
+          return true;
         });
 
         isApiProcessing = false;
+        activeBatchPickIds = {};
         saveQueueToStorage();
 
         console.error('batch send failed:', error);
 
-        const retryCount = Math.max.apply(null, batchItems.map(function(pick) {
-          return Number(pick.retryCount || 1);
-        }));
-
-        const waitMs = Math.min(30000, 3000 + retryCount * 2000);
-        setTimeout(processQueue, waitMs);
+        if (hasAutoRetry) {
+          const waitMs = Math.min(30000, 3000 + maxRetryCount * 2000);
+          setTimeout(processQueue, waitMs);
+        } else {
+          // 手動再送待ちへ退避したデータがあっても、他のキュー処理は継続する。
+          processQueue();
+        }
       }
     }
 
@@ -2152,21 +2701,23 @@
       if (apiQueue.length === 0 && !isApiProcessing) {
         releaseScreenWakeLock_();
 
+        const attentionCount = progress.serverErrors + progress.manualRetryRequired;
+
         if (nextButton) nextButton.disabled = false;
-        if (title) title.textContent = progress.serverErrors > 0 ? '送信完了（要確認）' : '送信完了';
+        if (title) title.textContent = attentionCount > 0 ? '自動送信終了（要確認）' : '送信完了';
 
         if (message) {
-          message.textContent = progress.serverErrors > 0
-            ? 'サーバーへの送信は完了しました。登録側エラーがあるため履歴を確認してください。'
+          message.textContent = attentionCount > 0
+            ? '自動送信は終了しました。要確認データは履歴から強制再送または取消できます。次の作業は開始可能です。'
             : 'すべてのデータについてGASの受信確認が完了しました。この画面を閉じて問題ありません。';
-          message.style.color = progress.serverErrors > 0 ? '#b31412' : '#155724';
+          message.style.color = attentionCount > 0 ? '#b31412' : '#155724';
         }
 
-        statusBox.style.background = progress.serverErrors > 0 ? '#fce8e6' : '#d4edda';
-        statusBox.style.borderColor = progress.serverErrors > 0 ? '#f5c2c7' : '#c3e6cb';
+        statusBox.style.background = attentionCount > 0 ? '#fce8e6' : '#d4edda';
+        statusBox.style.borderColor = attentionCount > 0 ? '#f5c2c7' : '#c3e6cb';
         statusBox.innerHTML = `
-          <p style="margin:0; font-size:18px; font-weight:bold; color:${progress.serverErrors > 0 ? '#b31412' : '#155724'};">
-            ${progress.serverErrors > 0 ? '⚠ 送信は完了しました' : '✓ 全件送信完了'}
+          <p style="margin:0; font-size:18px; font-weight:bold; color:${attentionCount > 0 ? '#b31412' : '#155724'};">
+            ${attentionCount > 0 ? '⚠ 自動送信終了・要確認' : '✓ 全件送信完了'}
           </p>
           ${progress.total > 0 ? `
             <p style="margin:8px 0 0 0; font-size:14px; color:#333; font-weight:bold;">
@@ -2177,9 +2728,19 @@
             <p style="margin:8px 0 0 0; font-size:13px; color:#b31412; font-weight:bold;">
               登録側エラー: ${progress.serverErrors} 件
             </p>
-          ` : `
+          ` : ''}
+          ${progress.manualRetryRequired > 0 ? `
+            <p style="margin:8px 0 0 0; font-size:13px; color:#b31412; font-weight:bold;">
+              要手動再送: ${progress.manualRetryRequired} 件
+            </p>
+          ` : ''}
+          ${attentionCount === 0 ? `
             <p style="margin:8px 0 0 0; font-size:13px; color:#155724;">
               実データへの反映は登録用GASのprocessQueueがサーバー側で継続します。
+            </p>
+          ` : `
+            <p style="margin:8px 0 0 0; font-size:13px; color:#b31412;">
+              右上の「履歴」から対象データを確認してください。
             </p>
           `}
         `;
@@ -3138,6 +3699,12 @@
       bootstrapApp()
         .then(function() {
           setBootStatus('');
+          updateHistoryAccessUI_();
+
+          // 起動時にもサーバー履歴と照合し、古いSENDING/ERROR表示を補正する。
+          syncServerHistory_({ silent: true }).catch(function(error) {
+            console.warn('startup history sync failed:', error && error.message ? error.message : error);
+          });
         })
         .catch(function(error) {
           console.error('bootstrap background error:', error);
@@ -3174,6 +3741,7 @@
         readAuthToken();
         applyLoginUserFromTokenFallback_();
         initQueue();
+        updateHistoryAccessUI_();
 
         setTimeout(loadBootstrapInBackground_, 100);
 
