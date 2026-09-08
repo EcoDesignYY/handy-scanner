@@ -1217,45 +1217,15 @@
       return Number.isNaN(date.getTime()) ? null : date;
     }
 
-    function getOperationDateKey_(value) {
-      const date = parseHandyDate_(value);
-
-      if (!date) {
-        return '';
-      }
-
-      const parts = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Asia/Tokyo',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit'
-      }).formatToParts(date);
-
-      const map = {};
-      parts.forEach(function(part) {
-        map[part.type] = part.value;
-      });
-
-      return [map.year || '', map.month || '', map.day || ''].join('-');
-    }
-
     function queueContextKey(pick) {
-      const parts = [
+      // 登録先日付はサーバー受信時のreceivedAtで決定するため、
+      // operationAtの日付ではバッチを分割しない。
+      return [
         pick.jobNo || '',
         pick.person || '',
         pick.purpose || '',
         pick.purposeName || ''
-      ];
-
-      // 入庫・出庫・棚卸すべて作業日単位でバッチを分離する。
-      // 翌日再送でも元の作業日のA1 / A11 / tanalogへ登録するため。
-      parts.push(
-        getOperationDateKey_(
-          pick.operationAt || pick.createdAt || ''
-        )
-      );
-
-      return parts.join('|');
+      ].join('|');
     }
 
     function ensureCurrentWorkSessionId_() {
