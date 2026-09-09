@@ -698,6 +698,144 @@
       color: #fff;
     }
 
+    .pick-history-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+
+    .pick-history-tabs button {
+      margin: 0;
+      padding: 9px 8px;
+      min-height: 40px;
+      border-radius: 8px;
+      background: #e8eaed;
+      color: #333;
+      border: 1px solid #c9cdd2;
+      font-size: 13px;
+      font-weight: bold;
+    }
+
+    .pick-history-tabs button.active {
+      background: #1a73e8;
+      color: #fff;
+      border-color: #1a73e8;
+    }
+
+    .pick-history-bulk-panel {
+      display: none;
+      border: 1px solid #d9e2f3;
+      border-radius: 8px;
+      background: #f6f9fe;
+      padding: 8px;
+      margin-bottom: 8px;
+    }
+
+    .pick-history-bulk-panel.active {
+      display: block;
+    }
+
+    .pick-history-bulk-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 7px;
+      font-size: 13px;
+    }
+
+    .pick-history-select-all {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: bold;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .pick-history-select-all input,
+    .pick-history-checkbox {
+      width: 20px;
+      height: 20px;
+      margin: 0;
+      accent-color: #1a73e8;
+      flex: 0 0 auto;
+    }
+
+    .pick-history-row-layout {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .pick-history-row-body {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .pick-history-checkbox-wrap {
+      display: flex;
+      align-items: flex-start;
+      padding-top: 2px;
+      flex: 0 0 auto;
+    }
+
+    .pick-history-bulk-actions {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+    }
+
+    .pick-history-bulk-actions button {
+      margin: 0;
+      padding: 9px 5px;
+      min-height: 40px;
+      font-size: 12px;
+      border-radius: 7px;
+    }
+
+    .pick-history-bulk-actions button.danger-small {
+      background: #dc3545;
+      color: #fff;
+    }
+
+    #pick-history-list {
+      flex: 1 1 auto;
+      min-height: 100px;
+      max-height: 55dvh;
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior-y: contain;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 8px;
+      background: #fafafa;
+    }
+
+    #pick-history-modal .modal-content {
+      max-height: calc(100dvh - 32px);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #pick-history-modal .modal-buttons {
+      flex: 0 0 auto;
+    }
+
+    @media (max-width: 599px) {
+      .pick-history-bulk-actions {
+        grid-template-columns: 1fr 1fr 1fr;
+      }
+
+      .pick-history-actions button {
+        flex-basis: 88px;
+      }
+    }
+
     #global-history-button {
       position: fixed;
       top: 70px;
@@ -881,8 +1019,26 @@
   <div id="pick-history-modal" class="modal-overlay" style="z-index: 10001;">
     <div class="modal-content" style="max-width:520px; text-align:left;">
       <h3 style="margin-top:0; text-align:center;">ピッキング履歴</h3>
+      <div class="pick-history-tabs" role="tablist" aria-label="履歴表示切替">
+        <button id="history-tab-all" type="button" class="active" onclick="switchHistoryView_('all')">全履歴</button>
+        <button id="history-tab-unsent" type="button" onclick="switchHistoryView_('unsent')">未送信・要対応 <span id="history-unsent-count"></span></button>
+      </div>
       <div id="pick-history-summary" style="font-size:13px; margin-bottom:8px; color:#555;"></div>
-      <div id="pick-history-list" style="max-height:55dvh; overflow:auto; border:1px solid #ddd; border-radius:8px; padding:8px; background:#fafafa;"></div>
+      <div id="pick-history-bulk-panel" class="pick-history-bulk-panel">
+        <div class="pick-history-bulk-head">
+          <label class="pick-history-select-all">
+            <input id="pick-history-select-all" type="checkbox" onchange="toggleSelectAllHistory_(this.checked)">
+            <span>全選択</span>
+          </label>
+          <span id="pick-history-selected-count">選択中: 0件</span>
+        </div>
+        <div class="pick-history-bulk-actions">
+          <button id="history-bulk-resend" type="button" onclick="bulkForceResendSelected()">強制再送</button>
+          <button id="history-bulk-share" type="button" class="secondary" onclick="bulkShareSelected()">共有</button>
+          <button id="history-bulk-cancel" type="button" class="danger-small" onclick="bulkCancelSelected()">取消</button>
+        </div>
+      </div>
+      <div id="pick-history-list"></div>
       <div class="modal-buttons" style="margin-top:10px;">
         <button type="button" class="secondary" onclick="closePickHistory()">閉じる</button>
         <button type="button" onclick="cleanupReceivedQueue()">残件を再計算</button>
@@ -928,6 +1084,8 @@
     const PICK_HISTORY_KEY = 'handy_pick_history_v2';
     const HIDDEN_HISTORY_KEY = 'handy_hidden_history_v1';
     const ACTIVE_WORK_SESSION_KEY = 'handy_active_work_session_v1';
+    const HISTORY_RETENTION_DAYS = 7;
+    const HISTORY_MAX_RESOLVED_ITEMS = 500;
     const MAX_BATCH_ITEMS = 30;
     const MAX_AUTO_RETRY_COUNT = 3;
     const SUBMIT_REQUEST_TIMEOUT_MS = 12000;
@@ -939,6 +1097,10 @@
     let activeBatchPickIds = {};
     let serverHistorySyncPromise = null;
     let historyItemActionState = {};
+    let historyViewMode = 'all';
+    let selectedHistoryPickIds = {};
+    let historyBulkActionState = '';
+    let historyCancellationGuardIds = {};
     let currentWorkSessionId = '';
     let finishScreenActive = false;
     let screenWakeLock = null;
@@ -1447,32 +1609,83 @@
       saveHiddenHistoryIds_(ids);
     }
 
+    function isResolvedHistoryRow_(row) {
+      if (!row) return false;
+      const serverStatus = String(row.serverStatus || '').trim();
+      const status = String(row.status || '').trim();
+      return serverStatus === 'RECEIVED' || serverStatus === 'REGISTERED' ||
+        status === 'RECEIVED' || status === 'REGISTERED';
+    }
+
+    function getHistoryRetentionDate_(row) {
+      if (!row || !isResolvedHistoryRow_(row)) return null;
+
+      // 正常終了履歴はGAS受信日時を基準に7日間保持する。
+      // receivedAtが無い旧履歴は安全側として自動削除しない。
+      const date = parseHandyDate_(row.receivedAt || '');
+      return date && !Number.isNaN(date.getTime()) ? date : null;
+    }
+
+    function shouldKeepHistoryRow_(row, nowMs) {
+      if (!row) return false;
+
+      // 未送信・異常・状態不明は解決または取消されるまで期限削除しない。
+      if (!isResolvedHistoryRow_(row)) return true;
+
+      const receivedDate = getHistoryRetentionDate_(row);
+      if (!receivedDate) return true;
+
+      const ageMs = Number(nowMs || Date.now()) - receivedDate.getTime();
+      const retentionMs = HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+      return ageMs < retentionMs;
+    }
+
+    function prunePickHistoryRows_(rows) {
+      const hidden = {};
+      loadHiddenHistoryIds_().forEach(function(id) { hidden[id] = true; });
+      const nowMs = Date.now();
+
+      const kept = (rows || []).filter(function(row) {
+        return row &&
+          !hidden[String(row.pickId || '')] &&
+          shouldKeepHistoryRow_(row, nowMs);
+      });
+
+      // 未解決データは件数上限で消さない。正常終了履歴だけ最大500件に制限する。
+      const resolved = kept.filter(isResolvedHistoryRow_);
+      if (resolved.length <= HISTORY_MAX_RESOLVED_ITEMS) {
+        return kept;
+      }
+
+      const resolvedKeepIds = {};
+      resolved.slice(-HISTORY_MAX_RESOLVED_ITEMS).forEach(function(row) {
+        resolvedKeepIds[String(row.pickId || '')] = true;
+      });
+
+      return kept.filter(function(row) {
+        return !isResolvedHistoryRow_(row) || resolvedKeepIds[String(row.pickId || '')];
+      });
+    }
+
     function loadPickHistory() {
       try {
-        const rows = JSON.parse(localStorage.getItem(PICK_HISTORY_KEY) || '[]');
+        const raw = localStorage.getItem(PICK_HISTORY_KEY) || '[]';
+        const rows = JSON.parse(raw);
         if (!Array.isArray(rows)) return [];
-        const hidden = {};
-        loadHiddenHistoryIds_().forEach(function(id) { hidden[id] = true; });
-        return rows.filter(function(row) {
-          return row && !hidden[String(row.pickId || '')];
-        });
+
+        const pruned = prunePickHistoryRows_(rows);
+        if (JSON.stringify(pruned) !== JSON.stringify(rows)) {
+          localStorage.setItem(PICK_HISTORY_KEY, JSON.stringify(pruned));
+        }
+        return pruned;
       } catch (error) {
         return [];
       }
     }
 
     function savePickHistory(rows) {
-      const hidden = {};
-      loadHiddenHistoryIds_().forEach(function(id) { hidden[id] = true; });
-
-      // 端末肥大化防止。直近500件だけ保持。
-      const trimmed = (rows || [])
-        .filter(function(row) {
-          return row && !hidden[String(row.pickId || '')];
-        })
-        .slice(-500);
-
-      localStorage.setItem(PICK_HISTORY_KEY, JSON.stringify(trimmed));
+      const pruned = prunePickHistoryRows_(rows || []);
+      localStorage.setItem(PICK_HISTORY_KEY, JSON.stringify(pruned));
       updateHistoryAccessUI_();
     }
 
@@ -1662,6 +1875,545 @@
       return '';
     }
 
+    function isUnsentHistoryStatus_(status) {
+      return [
+        'PENDING',
+        'RESEND_QUEUED',
+        'SENDING',
+        'ERROR',
+        'RETRY_REQUIRED',
+        'UNKNOWN'
+      ].indexOf(String(status || '')) !== -1;
+    }
+
+    function isBulkResendEligibleStatus_(status) {
+      return [
+        'PENDING',
+        'SENDING',
+        'ERROR',
+        'RETRY_REQUIRED',
+        'UNKNOWN'
+      ].indexOf(String(status || '')) !== -1;
+    }
+
+    function isBulkCancelEligibleStatus_(status) {
+      return [
+        'PENDING',
+        'RESEND_QUEUED',
+        'ERROR',
+        'RETRY_REQUIRED',
+        'UNKNOWN'
+      ].indexOf(String(status || '')) !== -1;
+    }
+
+    function isHistoryRowSelectable_(row) {
+      if (!row) return false;
+      const pickId = String(row.pickId || '');
+      const status = getEffectiveHistoryStatus_(row);
+      if (!pickId || !isUnsentHistoryStatus_(status)) return false;
+      if (getHistoryItemActionState_(pickId)) return false;
+      if (isPickActive_(pickId)) return false;
+      return true;
+    }
+
+    function getUnsentHistoryRows_() {
+      return loadPickHistory().filter(function(row) {
+        return isUnsentHistoryStatus_(getEffectiveHistoryStatus_(row));
+      });
+    }
+
+    function getVisibleHistoryRows_() {
+      const rows = loadPickHistory().slice().reverse();
+      if (historyViewMode !== 'unsent') return rows;
+      return rows.filter(function(row) {
+        return isUnsentHistoryStatus_(getEffectiveHistoryStatus_(row));
+      });
+    }
+
+    function clearHistorySelection_() {
+      selectedHistoryPickIds = {};
+    }
+
+    function pruneHistorySelection_() {
+      const visible = {};
+      getVisibleHistoryRows_().forEach(function(row) {
+        if (isHistoryRowSelectable_(row)) {
+          visible[String(row.pickId || '')] = true;
+        }
+      });
+
+      Object.keys(selectedHistoryPickIds).forEach(function(id) {
+        if (!visible[id]) delete selectedHistoryPickIds[id];
+      });
+    }
+
+    function switchHistoryView_(mode) {
+      historyViewMode = mode === 'unsent' ? 'unsent' : 'all';
+      clearHistorySelection_();
+      renderPickHistory();
+    }
+
+    function toggleHistorySelection_(pickId, checked) {
+      const target = String(pickId || '');
+      if (!target) return;
+
+      const row = loadPickHistory().find(function(item) {
+        return String(item.pickId || '') === target;
+      });
+
+      if (!row || !isHistoryRowSelectable_(row)) {
+        delete selectedHistoryPickIds[target];
+        renderPickHistory();
+        return;
+      }
+
+      if (checked) selectedHistoryPickIds[target] = true;
+      else delete selectedHistoryPickIds[target];
+
+      updateHistoryBulkUI_();
+    }
+
+    function toggleSelectAllHistory_(checked) {
+      if (historyViewMode !== 'unsent' || historyBulkActionState) return;
+
+      if (!checked) {
+        clearHistorySelection_();
+        updateHistoryBulkUI_();
+        renderPickHistory();
+        return;
+      }
+
+      getVisibleHistoryRows_().forEach(function(row) {
+        if (isHistoryRowSelectable_(row)) {
+          selectedHistoryPickIds[String(row.pickId || '')] = true;
+        }
+      });
+      renderPickHistory();
+    }
+
+    function getSelectedHistoryRows_() {
+      const selected = selectedHistoryPickIds;
+      return loadPickHistory().filter(function(row) {
+        return !!selected[String(row.pickId || '')];
+      });
+    }
+
+    function updateHistoryBulkUI_() {
+      const panel = document.getElementById('pick-history-bulk-panel');
+      const selectedCountEl = document.getElementById('pick-history-selected-count');
+      const selectAll = document.getElementById('pick-history-select-all');
+      const resendButton = document.getElementById('history-bulk-resend');
+      const shareButton = document.getElementById('history-bulk-share');
+      const cancelButton = document.getElementById('history-bulk-cancel');
+
+      if (!panel) return;
+
+      const unsentMode = historyViewMode === 'unsent';
+      panel.classList.toggle('active', unsentMode);
+      if (!unsentMode) return;
+
+      pruneHistorySelection_();
+      const visibleSelectable = getVisibleHistoryRows_().filter(isHistoryRowSelectable_);
+      const selectedRows = getSelectedHistoryRows_();
+      const selectedCount = selectedRows.length;
+      const busy = !!historyBulkActionState;
+
+      if (selectedCountEl) {
+        selectedCountEl.textContent = busy
+          ? (historyBulkActionState === 'cancelling' ? '取消確認中...' :
+             historyBulkActionState === 'resending' ? '再送準備中...' : '共有準備中...')
+          : '選択中: ' + selectedCount + '件';
+      }
+
+      if (selectAll) {
+        const selectableCount = visibleSelectable.length;
+        const selectedSelectableCount = visibleSelectable.filter(function(row) {
+          return !!selectedHistoryPickIds[String(row.pickId || '')];
+        }).length;
+        selectAll.checked = selectableCount > 0 && selectedSelectableCount === selectableCount;
+        selectAll.indeterminate = selectedSelectableCount > 0 && selectedSelectableCount < selectableCount;
+        selectAll.disabled = busy || selectableCount === 0;
+      }
+
+      if (resendButton) resendButton.disabled = busy || selectedCount === 0;
+      if (shareButton) shareButton.disabled = busy || selectedCount === 0;
+      if (cancelButton) cancelButton.disabled = busy || selectedCount === 0;
+    }
+
+    function setHistoryBulkActionState_(state) {
+      historyBulkActionState = String(state || '');
+      if (isHistoryModalOpen_()) renderPickHistory();
+    }
+
+    function isPickCancellationGuarded_(pickId) {
+      return historyCancellationGuardIds[String(pickId || '')] === true;
+    }
+
+    function setPickCancellationGuard_(pickId, guarded) {
+      const target = String(pickId || '');
+      if (!target) return;
+      if (guarded) historyCancellationGuardIds[target] = true;
+      else delete historyCancellationGuardIds[target];
+    }
+
+    function formatHistoryDateText_(value) {
+      const date = parseHandyDate_(value || '');
+      return date ? date.toLocaleString('ja-JP') : String(value || '');
+    }
+
+    function buildHistoryShareText_(rows) {
+      const list = rows || [];
+      const lines = [
+        '【スマホハンディ 未送信・要対応データ】',
+        '',
+        '件数: ' + list.length + '件',
+        ''
+      ];
+
+      list.forEach(function(row, index) {
+        const status = getEffectiveHistoryStatus_(row);
+        lines.push((index + 1) + '.');
+        lines.push('商品CD: ' + String(row.barcode || ''));
+        lines.push(row.isDelete ? '処理: 削除' : '数量: ' + String(row.qty ?? ''));
+        lines.push('処理区分: ' + String(row.purposeName || ''));
+        if (row.jobNo) lines.push('JOB.NO: ' + String(row.jobNo));
+        if (row.person) lines.push('担当者: ' + String(row.person));
+        lines.push('状態: ' + statusLabel(status));
+        if (row.operationAt || row.createdAt) {
+          lines.push('作業日時: ' + formatHistoryDateText_(row.operationAt || row.createdAt));
+        }
+        if (row.receivedAt) {
+          lines.push('GAS受信日時: ' + formatHistoryDateText_(row.receivedAt));
+        }
+        if (row.lastError) lines.push('エラー: ' + String(row.lastError));
+        lines.push('pickId: ' + String(row.pickId || ''));
+        lines.push('');
+      });
+
+      return lines.join('\n').trim();
+    }
+
+    function copyTextFallback_(text) {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        return navigator.clipboard.writeText(text);
+      }
+
+      return new Promise(function(resolve, reject) {
+        try {
+          const textarea = document.createElement('textarea');
+          textarea.value = text;
+          textarea.setAttribute('readonly', '');
+          textarea.style.position = 'fixed';
+          textarea.style.opacity = '0';
+          document.body.appendChild(textarea);
+          textarea.select();
+          const ok = document.execCommand('copy');
+          document.body.removeChild(textarea);
+          if (!ok) throw new Error('コピーに失敗しました。');
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+    }
+
+    async function bulkShareSelected() {
+      if (historyBulkActionState) return;
+      const rows = getSelectedHistoryRows_().filter(isHistoryRowSelectable_);
+      if (rows.length === 0) {
+        alert('共有するデータを選択してください。');
+        return;
+      }
+
+      const text = buildHistoryShareText_(rows);
+      const title = 'スマホハンディ 未送信・要対応 ' + rows.length + '件';
+      historyBulkActionState = 'sharing';
+      updateHistoryBulkUI_();
+
+      try {
+        if (navigator.share && typeof navigator.share === 'function') {
+          // ユーザー操作直後にWeb Share APIを呼び出し、Teams等は端末の共有シートから選択する。
+          await navigator.share({ title: title, text: text });
+        } else {
+          await copyTextFallback_(text);
+          alert('この端末では共有画面を開けないため、内容をクリップボードへコピーしました。');
+        }
+      } catch (error) {
+        if (!error || error.name !== 'AbortError') {
+          try {
+            await copyTextFallback_(text);
+            alert('共有画面を開けなかったため、内容をクリップボードへコピーしました。');
+          } catch (copyError) {
+            alert('共有に失敗しました: ' + (error && error.message ? error.message : String(error)));
+          }
+        }
+      } finally {
+        historyBulkActionState = '';
+        updateHistoryBulkUI_();
+      }
+    }
+
+    function prepareHistoryRowsForResend_(rows) {
+      const currentRows = loadPickHistory();
+      const currentMap = {};
+      currentRows.forEach(function(row) {
+        currentMap[String(row.pickId || '')] = row;
+      });
+
+      const preparedIds = [];
+      const skippedIds = [];
+      const now = new Date().toISOString();
+
+      (rows || []).forEach(function(inputRow) {
+        const target = String(inputRow && inputRow.pickId || '');
+        const row = currentMap[target];
+        if (!row) {
+          skippedIds.push(target);
+          return;
+        }
+
+        const status = getEffectiveHistoryStatus_(row);
+        if (!isBulkResendEligibleStatus_(status) || isPickActive_(target)) {
+          skippedIds.push(target);
+          return;
+        }
+
+        try {
+          unhideHistoryPickId_(target);
+          let pick = getQueueItemByPickId_(target);
+          if (pick) {
+            pick.status = 'PENDING';
+            pick.batchId = '';
+            pick.retryCount = 0;
+            pick.lastError = '';
+            pick.lastErrorAt = '';
+            pick.serverStatus = '';
+            pick.serverFound = null;
+            pick.serverCheckedAt = '';
+            pick.manualResendAt = now;
+          } else {
+            pick = buildQueuePickFromHistory_(row);
+            pick.serverFound = null;
+            pick.serverCheckedAt = '';
+            pick.manualResendAt = now;
+            apiQueue.push(pick);
+          }
+
+          const historyIndex = currentRows.findIndex(function(item) {
+            return String(item.pickId || '') === target;
+          });
+          if (historyIndex >= 0) {
+            currentRows[historyIndex] = Object.assign({}, currentRows[historyIndex], {
+              status: 'PENDING',
+              batchId: '',
+              retryCount: 0,
+              lastError: '',
+              lastErrorAt: '',
+              serverStatus: '',
+              serverFound: null,
+              serverCheckedAt: '',
+              manualResendAt: now,
+              updatedAt: now
+            });
+          }
+          preparedIds.push(target);
+        } catch (error) {
+          console.error('bulk resend prepare failed:', target, error);
+          skippedIds.push(target);
+        }
+      });
+
+      savePickHistory(currentRows);
+      saveQueueToStorage();
+      return { preparedIds: preparedIds, skippedIds: skippedIds };
+    }
+
+    function bulkForceResendSelected() {
+      if (historyBulkActionState) return;
+      const selectedRows = getSelectedHistoryRows_();
+      const eligibleRows = selectedRows.filter(function(row) {
+        return isBulkResendEligibleStatus_(getEffectiveHistoryStatus_(row)) &&
+          !isPickActive_(row.pickId);
+      });
+
+      if (eligibleRows.length === 0) {
+        alert('強制再送できるデータが選択されていません。');
+        return;
+      }
+
+      if (!confirm(
+        eligibleRows.length + '件を同じpickIdのまま強制再送しますか？\n' +
+        '送信は既存の30件バッチ・直列処理で行います。'
+      )) return;
+
+      setHistoryBulkActionState_('resending');
+      try {
+        const result = prepareHistoryRowsForResend_(eligibleRows);
+        result.preparedIds.forEach(function(id) {
+          delete selectedHistoryPickIds[id];
+        });
+        renderPickHistory();
+
+        if (result.preparedIds.length === 0) {
+          alert('再送準備できるデータがありませんでした。');
+          return;
+        }
+
+        if (!authToken || isAuthTokenExpired_()) {
+          alert(
+            result.preparedIds.length + '件を端末内の再送待機へ戻しました。\n' +
+            '認証期限が切れているため、入口GASから再認証すると送信を開始します。'
+          );
+          return;
+        }
+
+        // 複数行からprocessQueueを呼ばず、最後に1回だけ開始する。
+        processQueue();
+
+        if (result.skippedIds.length > 0) {
+          alert(
+            result.preparedIds.length + '件を再送待機へ移しました。\n' +
+            result.skippedIds.length + '件は状態変化等により対象外でした。'
+          );
+        }
+      } finally {
+        setHistoryBulkActionState_('');
+      }
+    }
+
+    async function bulkCancelSelected() {
+      if (historyBulkActionState) return;
+
+      const selectedRows = getSelectedHistoryRows_();
+      const candidates = selectedRows.filter(function(row) {
+        return isBulkCancelEligibleStatus_(getEffectiveHistoryStatus_(row)) &&
+          !isPickActive_(row.pickId);
+      });
+
+      if (candidates.length === 0) {
+        alert('取消確認できるデータが選択されていません。');
+        return;
+      }
+
+      if (!confirm(
+        candidates.length + '件についてサーバー未受信か確認します。\n' +
+        'サーバー未受信を確認できたデータだけ取消候補にします。'
+      )) return;
+
+      setHistoryBulkActionState_('cancelling');
+      candidates.forEach(function(row) {
+        setPickCancellationGuard_(row.pickId, true);
+      });
+
+      const cancellableIds = [];
+      const serverFoundIds = [];
+      const activeIds = [];
+      const checkFailedIds = [];
+
+      try {
+        // GASへの負荷と状態競合を避けるため、checkPickは1件ずつ直列確認する。
+        for (const row of candidates) {
+          const target = String(row.pickId || '');
+          if (!target) continue;
+
+          if (isPickActive_(target)) {
+            activeIds.push(target);
+            continue;
+          }
+
+          try {
+            const result = await checkPickServerStatus_(target);
+            const applied = applySingleServerCheckResult_(target, result);
+
+            if (applied.found) {
+              serverFoundIds.push(target);
+              continue;
+            }
+
+            // 確認待ち中に送信開始された場合は絶対に取消対象へ入れない。
+            if (isPickActive_(target)) {
+              activeIds.push(target);
+              continue;
+            }
+
+            cancellableIds.push(target);
+          } catch (error) {
+            console.error('bulk cancel server check failed:', target, error);
+            checkFailedIds.push(target);
+          }
+        }
+
+        if (cancellableIds.length === 0) {
+          alert(
+            '取消できるデータはありませんでした。\n' +
+            'サーバー受信済み: ' + serverFoundIds.length + '件\n' +
+            '送信中: ' + activeIds.length + '件\n' +
+            '確認失敗: ' + checkFailedIds.length + '件'
+          );
+          return;
+        }
+
+        if (!confirm(
+          'サーバー未受信を確認した ' + cancellableIds.length + '件を取消しますか？\n\n' +
+          'サーバー受信済み・確認失敗・送信中のデータは取消しません。'
+        )) return;
+
+        // 最終確定直前にもactive状態を再確認する。
+        const finalIds = cancellableIds.filter(function(id) {
+          return !isPickActive_(id);
+        });
+        const becameActiveCount = cancellableIds.length - finalIds.length;
+
+        if (finalIds.length === 0) {
+          alert('取消直前に送信が開始されたため、取消を中止しました。');
+          return;
+        }
+
+        const finalMap = {};
+        finalIds.forEach(function(id) { finalMap[id] = true; });
+
+        apiQueue = apiQueue.filter(function(pick) {
+          return !finalMap[String(pick && pick.pickId || '')];
+        });
+
+        saveHiddenHistoryIds_(loadHiddenHistoryIds_().concat(finalIds));
+        const remainingRows = loadPickHistory().filter(function(item) {
+          return !finalMap[String(item.pickId || '')];
+        });
+        savePickHistory(remainingRows);
+
+        finalIds.forEach(function(id) {
+          const li = document.getElementById(id);
+          if (li) li.remove();
+          delete historyContexts[id];
+          delete selectedHistoryPickIds[id];
+        });
+
+        saveQueueToStorage();
+        renderPickHistory();
+
+        alert(
+          finalIds.length + '件を取消しました。\n' +
+          'サーバー受信済み: ' + serverFoundIds.length + '件\n' +
+          '送信中/途中開始: ' + (activeIds.length + becameActiveCount) + '件\n' +
+          '確認失敗: ' + checkFailedIds.length + '件'
+        );
+
+        if (apiQueue.length === 0) {
+          isApiProcessing = false;
+          updateQueueUI();
+        }
+      } finally {
+        candidates.forEach(function(row) {
+          setPickCancellationGuard_(row.pickId, false);
+        });
+        setHistoryBulkActionState_('');
+        if (!isApiProcessing && apiQueue.length > 0) {
+          processQueue();
+        }
+      }
+    }
+
     function updateHistoryAccessUI_() {
       const button = document.getElementById('global-history-button');
       const badge = document.getElementById('history-alert-badge');
@@ -1795,34 +2547,54 @@
     }
     function showPickHistory() {
       // 履歴は即表示する。開くたびの500件全体同期は行わない。
-      // 個別の「サーバー確認」は軽量なcheckPick API、全体同期は「サーバー履歴更新」で明示実行する。
+      // 個別確認はcheckPick、全体同期は「サーバー履歴更新」で明示実行する。
       document.getElementById('pick-history-modal').style.display = 'flex';
       renderPickHistory();
     }
 
     function closePickHistory() {
       document.getElementById('pick-history-modal').style.display = 'none';
+      clearHistorySelection_();
+      historyBulkActionState = '';
     }
+
     function renderPickHistory() {
       const list = document.getElementById('pick-history-list');
       const summary = document.getElementById('pick-history-summary');
+      const tabAll = document.getElementById('history-tab-all');
+      const tabUnsent = document.getElementById('history-tab-unsent');
+      const unsentCountEl = document.getElementById('history-unsent-count');
 
       if (!list || !summary) return;
 
-      const rows = loadPickHistory().slice().reverse();
+      const allRows = loadPickHistory().slice().reverse();
+      const unsentRows = allRows.filter(function(row) {
+        return isUnsentHistoryStatus_(getEffectiveHistoryStatus_(row));
+      });
+      const rows = historyViewMode === 'unsent' ? unsentRows : allRows;
       const pendingCount = apiQueue.length;
-      const manualCount = rows.filter(function(row) {
+      const manualCount = allRows.filter(function(row) {
         const status = getEffectiveHistoryStatus_(row);
         return status === 'RETRY_REQUIRED' || status === 'UNKNOWN' || status === 'SERVER_ERROR';
       }).length;
 
+      if (tabAll) tabAll.classList.toggle('active', historyViewMode === 'all');
+      if (tabUnsent) tabUnsent.classList.toggle('active', historyViewMode === 'unsent');
+      if (unsentCountEl) unsentCountEl.textContent = '(' + unsentRows.length + ')';
+
       summary.innerHTML =
         '端末内送信待ち: <strong>' + pendingCount + '</strong> 件' +
         ' / 要確認: <strong>' + manualCount + '</strong> 件' +
-        ' / 表示: 直近 ' + rows.length + ' 件';
+        ' / 表示: <strong>' + rows.length + '</strong> 件' +
+        (historyViewMode === 'all' ? '（正常履歴はGAS受信から7日間）' : '（未解決データは7日超でも保持）');
+
+      pruneHistorySelection_();
+      updateHistoryBulkUI_();
 
       if (rows.length === 0) {
-        list.innerHTML = '<div style="padding:12px; color:#666;">履歴はありません。</div>';
+        list.innerHTML = '<div style="padding:12px; color:#666;">' +
+          (historyViewMode === 'unsent' ? '未送信・要対応データはありません。' : '履歴はありません。') +
+          '</div>';
         updateHistoryAccessUI_();
         return;
       }
@@ -1838,13 +2610,13 @@
         const pickId = String(row.pickId || '');
         const safePickId = escapeHtmlClient(pickId);
         const actionState = getHistoryItemActionState_(pickId);
-        const busy = !!actionState;
+        const busy = !!actionState || !!historyBulkActionState;
         const active = isPickActive_(pickId);
         const canResend = !busy && [
           'PENDING', 'SENDING', 'ERROR', 'SERVER_ERROR', 'RETRY_REQUIRED', 'UNKNOWN'
         ].indexOf(status) !== -1;
         const cancelEligibleStatus = [
-          'PENDING', 'ERROR', 'RETRY_REQUIRED', 'UNKNOWN'
+          'PENDING', 'RESEND_QUEUED', 'ERROR', 'RETRY_REQUIRED', 'UNKNOWN'
         ].indexOf(status) !== -1;
         const cancelVerified = isRecentServerNotFoundCheck_(row);
         const canCancel = !busy && !active && cancelEligibleStatus && cancelVerified;
@@ -1867,8 +2639,22 @@
           }
         }
 
-        return `
-          <div class="pick-history-row">
+        let checkboxHtml = '';
+        if (historyViewMode === 'unsent') {
+          const selectable = isHistoryRowSelectable_(row) && !historyBulkActionState;
+          const checked = !!selectedHistoryPickIds[pickId];
+          const selectTitle = active ? '現在送信中のため選択できません' : '一括操作の対象に選択';
+          checkboxHtml =
+            '<label class="pick-history-checkbox-wrap" title="' + selectTitle + '">' +
+              '<input class="pick-history-checkbox" type="checkbox" ' +
+                (checked ? 'checked ' : '') +
+                (selectable ? '' : 'disabled ') +
+                'onchange="toggleHistorySelection_(\'' + safePickId + '\', this.checked)">' +
+            '</label>';
+        }
+
+        const bodyHtml = `
+          <div class="pick-history-row-body">
             <div class="pick-history-main">
               ${escapeHtmlClient(row.barcode || '')}
               / ${qtyText}
@@ -1891,10 +2677,14 @@
               ${status === 'RESEND_QUEUED' ? '<button type="button" disabled>再送待機中...</button>' : ''}
               ${cancelButton}
             </div>
-          </div>
-        `;
+          </div>`;
+
+        return '<div class="pick-history-row" data-pick-id="' + safePickId + '">' +
+          '<div class="pick-history-row-layout">' + checkboxHtml + bodyHtml + '</div>' +
+          '</div>';
       }).join('');
 
+      updateHistoryBulkUI_();
       updateHistoryAccessUI_();
     }
 
@@ -2393,8 +3183,8 @@
       }
 
       const status = getEffectiveHistoryStatus_(row);
-      if (status === 'RECEIVED' || status === 'REGISTERED') {
-        alert('サーバー受信済み・登録済みデータは履歴画面から取り消せません。');
+      if (status === 'RECEIVED' || status === 'REGISTERED' || status === 'SERVER_ERROR') {
+        alert('サーバーへ到達済みのデータは履歴画面から取り消せません。');
         return;
       }
 
@@ -2404,6 +3194,8 @@
       }
 
       // 表示上「サーバー未受信確認済み」であっても、取消直前に必ず再確認する。
+      // 確認中に自動送信の次バッチへ選ばれないよう、一時ガードする。
+      setPickCancellationGuard_(target, true);
       setHistoryItemActionState_(target, 'cancelling');
 
       try {
@@ -2459,7 +3251,11 @@
           'サーバー状態を確認できませんでした: ' + error.message
         );
       } finally {
+        setPickCancellationGuard_(target, false);
         setHistoryItemActionState_(target, '');
+        if (!isApiProcessing && apiQueue.length > 0) {
+          processQueue();
+        }
       }
     }
 
@@ -2511,7 +3307,8 @@
 
     function getNextBatch() {
       const candidates = apiQueue.filter(function(pick) {
-        return pick.status === 'PENDING' || pick.status === 'ERROR';
+        return (pick.status === 'PENDING' || pick.status === 'ERROR') &&
+          !isPickCancellationGuarded_(pick.pickId);
       });
 
       if (candidates.length === 0) {
@@ -3764,23 +4561,41 @@
       });
     }
 
+    function findVerticalScrollContainer_(target) {
+      let element = target && target.nodeType === 1 ? target : null;
+
+      while (element && element !== document.body && element !== document.documentElement) {
+        const style = window.getComputedStyle(element);
+        const overflowY = String(style.overflowY || '');
+        const scrollable = (overflowY === 'auto' || overflowY === 'scroll') &&
+          element.scrollHeight > element.clientHeight + 1;
+
+        if (scrollable) return element;
+        element = element.parentElement;
+      }
+
+      return null;
+    }
+
     function installPullToRefreshGuard_() {
       let startY = 0;
       let startX = 0;
+      let touchScrollContainer = null;
+      let touchStartedInModal = false;
 
       document.addEventListener('touchstart', function(event) {
-        if (!event.touches || event.touches.length !== 1) {
-          return;
-        }
+        if (!event.touches || event.touches.length !== 1) return;
 
         startY = event.touches[0].clientY;
         startX = event.touches[0].clientX;
+        touchScrollContainer = findVerticalScrollContainer_(event.target);
+        touchStartedInModal = !!(
+          event.target && event.target.closest && event.target.closest('.modal-overlay')
+        );
       }, { passive: true });
 
       document.addEventListener('touchmove', function(event) {
-        if (!event.touches || event.touches.length !== 1) {
-          return;
-        }
+        if (!event.touches || event.touches.length !== 1) return;
 
         const currentY = event.touches[0].clientY;
         const currentX = event.touches[0].clientX;
@@ -3788,25 +4603,51 @@
         const diffX = currentX - startX;
 
         // 横方向操作は阻害しない。
-        if (Math.abs(diffX) > Math.abs(diffY)) {
+        if (Math.abs(diffX) > Math.abs(diffY)) return;
+
+        const pullingDown = diffY > 0;
+        const pullingUp = diffY < 0;
+        const container = touchScrollContainer;
+
+        if (container) {
+          const atTop = container.scrollTop <= 0;
+          const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 1;
+
+          // 履歴一覧等の内部スクロールは通常通り許可する。
+          // その領域の端を越えて引いた場合だけバウンス/pull-to-refreshを止める。
+          if ((atTop && pullingDown) || (atBottom && pullingUp)) {
+            event.preventDefault();
+          }
+          return;
+        }
+
+        if (touchStartedInModal) {
+          // スクロール領域外のモーダル面では背面ページへのバウンスを防ぐ。
+          event.preventDefault();
           return;
         }
 
         const activeStep = document.querySelector('.step-container.active');
-        if (!activeStep) {
-          return;
-        }
+        if (!activeStep) return;
 
         const atTop = activeStep.scrollTop <= 0;
         const atBottom = activeStep.scrollTop + activeStep.clientHeight >= activeStep.scrollHeight - 1;
-        const pullingDown = diffY > 0;
-        const pullingUp = diffY < 0;
 
-        // Chrome Android の pull-to-refresh、iOS系ブラウザのバウンスを抑止。
+        // 通常画面は従来どおりpull-to-refresh/端バウンスだけ抑止する。
         if ((atTop && pullingDown) || (atBottom && pullingUp)) {
           event.preventDefault();
         }
       }, { passive: false });
+
+      document.addEventListener('touchend', function() {
+        touchScrollContainer = null;
+        touchStartedInModal = false;
+      }, { passive: true });
+
+      document.addEventListener('touchcancel', function() {
+        touchScrollContainer = null;
+        touchStartedInModal = false;
+      }, { passive: true });
     }
 
     window.addEventListener('error', function(event) {
