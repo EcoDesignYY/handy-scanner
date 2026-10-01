@@ -1089,9 +1089,22 @@
     const MAX_BATCH_ITEMS = 30;
     const MAX_AUTO_RETRY_COUNT = 3;
     const SUBMIT_REQUEST_TIMEOUT_MS = 12000;
+
+    // 複数端末が同時利用された時に再試行タイミングが同期しないよう、
+    // ACK確認と送信再試行は指数バックオフ + ランダムジッターで分散する。
     const ACK_RETRY_COUNT = 6;
-    const ACK_RETRY_INTERVAL_MS = 1200;
+    const ACK_RETRY_BASE_MS = 700;
+    const ACK_RETRY_MAX_MS = 4500;
+    const ACK_RETRY_JITTER_MS = 900;
+    const QUEUE_RETRY_BASE_MS = 2500;
+    const QUEUE_RETRY_MAX_MS = 30000;
+    const QUEUE_RETRY_JITTER_MS = 2500;
+    const PARTIAL_ACK_RETRY_BASE_MS = 1200;
+    const PARTIAL_ACK_RETRY_MAX_MS = 8000;
+    const PARTIAL_ACK_RETRY_JITTER_MS = 1600;
+
     const SERVER_ERROR_AUTO_SYNC_INTERVAL_MS = 60000;
+    const SERVER_ERROR_AUTO_SYNC_JITTER_MS = 15000;
     const SERVER_ERROR_AUTO_SYNC_MAX_IDS = 50;
 
     let apiQueue = [];
@@ -1109,6 +1122,7 @@
     let finishScreenActive = false;
     let screenWakeLock = null;
     let wakeLockRequestInFlight = false;
+    let transientClientErrorTimer = null;
 
     let lastScannedCode = "";
     let scanMatchCount = 0;
@@ -1159,8 +1173,81 @@
       return (
         text.indexOf('token') !== -1 ||
         text.indexOf('有効期限') !== -1 ||
-        text.indexOf('認証') !== -1
+        text.indexOf('認証期限') !== -1 ||
+        text.indexOf('認証情報がありません') !== -1
       );
+    }
+
+    function randomInt_(min, max) {
+      const lo = Math.ceil(Number(min) || 0);
+      const hi = Math.floor(Number(max) || 0);
+      if (hi <= lo) return lo;
+      return Math.floor(Math.random() * (hi - lo + 1)) + lo;
+    }
+
+    function retryDelayMs_(attemptIndex, baseMs, maxMs, jitterMs) {
+      const attempt = Math.max(0, Number(attemptIndex) || 0);
+      const base = Math.max(0, Number(baseMs) || 0);
+      const cap = Math.max(base, Number(maxMs) || base);
+      const jitter = Math.max(0, Number(jitterMs) || 0);
+      const exponential = Math.min(cap, base * Math.pow(2, attempt));
+      return exponential + randomInt_(0, jitter);
+    }
+
+    function sleepMs_(ms) {
+      return new Promise(function(resolve) {
+        setTimeout(resolve, Math.max(0, Number(ms) || 0));
+      });
+    }
+
+    function pauseForAuthentication_(message) {
+      sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+      authToken = '';
+
+      // 未送信キューはlocalStorageから削除しない。
+      // 認証だけ取り直し、同じpickIdのまま再開できる状態を維持する。
+      updateQueueUI();
+      setBootStatus(
+        '認証期限が切れています。未送信データは端末内に保持されています。再認証して送信を再開してください。',
+        true
+      );
+
+      console.warn('authentication required:', message || '認証期限切れ');
+    }
+
+    function showTransientClientError_(message) {
+      const text = String(message || '一時的な通信または処理エラー');
+      console.warn('transient client error:', text);
+
+      setBootStatus(
+        '一時的な通信または処理エラーを検出しました。自動復旧を継続します。未送信データは端末内に保持されています。',
+        true
+      );
+
+      if (transientClientErrorTimer) {
+        clearTimeout(transientClientErrorTimer);
+      }
+
+      transientClientErrorTimer = setTimeout(function() {
+        if (authToken && !isAuthTokenExpired_()) {
+          setBootStatus('');
+        }
+        transientClientErrorTimer = null;
+      }, 10000);
+    }
+
+    function handleGlobalClientFailure_(message, source) {
+      const text = String(message || '不明なエラー');
+      console.error(source || 'client error', text);
+
+      if (isAuthErrorMessage_(text)) {
+        pauseForAuthentication_(text);
+        return;
+      }
+
+      // 通信エラーや一時的なAPI読込失敗を認証エラー画面へ置き換えない。
+      // 現在の作業画面・localStorageキューを保持して自動復旧を待つ。
+      showTransientClientError_(text);
     }
 
     function postApi(action, payload) {
@@ -2606,18 +2693,30 @@
       return serverErrorAutoSyncPromise;
     }
 
-    function startServerErrorAutoSync_() {
+    function scheduleServerErrorAutoSync_(initial) {
       if (serverErrorAutoSyncTimer) {
-        clearInterval(serverErrorAutoSyncTimer);
+        clearTimeout(serverErrorAutoSyncTimer);
+        serverErrorAutoSyncTimer = null;
       }
 
-      serverErrorAutoSyncTimer = setInterval(function() {
-        syncServerErrorsFromServer_({ silent: true }).catch(function() {});
-      }, SERVER_ERROR_AUTO_SYNC_INTERVAL_MS);
+      const delayMs = initial
+        ? randomInt_(2500, 5500)
+        : SERVER_ERROR_AUTO_SYNC_INTERVAL_MS + randomInt_(0, SERVER_ERROR_AUTO_SYNC_JITTER_MS);
 
-      setTimeout(function() {
-        syncServerErrorsFromServer_({ silent: true }).catch(function() {});
-      }, 3000);
+      serverErrorAutoSyncTimer = setTimeout(function() {
+        serverErrorAutoSyncTimer = null;
+
+        syncServerErrorsFromServer_({ silent: true })
+          .catch(function() {})
+          .finally(function() {
+            scheduleServerErrorAutoSync_(false);
+          });
+      }, delayMs);
+    }
+
+    function startServerErrorAutoSync_() {
+      // setIntervalで全端末を同じ周期に固定せず、毎回ジッターを入れて分散する。
+      scheduleServerErrorAutoSync_(true);
     }
 
     function applySingleServerCheckResult_(pickId, result) {
@@ -2979,9 +3078,20 @@
           lastResult = { status: 'ERROR', message: error.message };
         }
 
-        await new Promise(function(resolve) {
-          setTimeout(resolve, ACK_RETRY_INTERVAL_MS);
-        });
+        if (i < ACK_RETRY_COUNT - 1) {
+          const delayMs = retryDelayMs_(
+            i,
+            ACK_RETRY_BASE_MS,
+            ACK_RETRY_MAX_MS,
+            ACK_RETRY_JITTER_MS
+          );
+          console.warn('ACK再確認を分散待機します:', {
+            batchId: batchId,
+            attempt: i + 1,
+            delayMs: delayMs
+          });
+          await sleepMs_(delayMs);
+        }
       }
 
       // 一部だけACKが取れている場合は、その結果を返す。
@@ -3415,7 +3525,8 @@
         // 送信自体は従来どおり1バッチずつ直列で実行する。
         goToStep(6);
         setBootStatus('前回の未送信データを自動送信しています。完了表示まで画面を閉じないでください。', true);
-        setTimeout(processQueue, 500);
+        // 複数端末が同時に再認証・再起動した場合の一斉再送を避ける。
+        setTimeout(processQueue, randomInt_(500, 1800));
       }
     }
     function saveQueueToStorage() {
@@ -3667,9 +3778,20 @@
         saveQueueToStorage();
 
         if (hasUnconfirmed) {
-          setTimeout(processQueue, 1500);
+          const partialRetryCount = Math.max.apply(null, batchItems.map(function(pick) {
+            return Number(pick.retryCount || 0);
+          }));
+          const waitMs = retryDelayMs_(
+            Math.max(0, partialRetryCount - 1),
+            PARTIAL_ACK_RETRY_BASE_MS,
+            PARTIAL_ACK_RETRY_MAX_MS,
+            PARTIAL_ACK_RETRY_JITTER_MS
+          );
+          console.warn('未ACK分の再送を分散待機します:', { batchId: batchId, delayMs: waitMs });
+          setTimeout(processQueue, waitMs);
         } else {
-          processQueue();
+          // 次バッチも端末間で完全同期しないよう、ごく短いジッターを入れる。
+          setTimeout(processQueue, randomInt_(120, 650));
         }
 
       } catch (error) {
@@ -3754,11 +3876,20 @@
         console.error('batch send failed:', error);
 
         if (hasAutoRetry) {
-          const waitMs = Math.min(30000, 3000 + maxRetryCount * 2000);
+          const waitMs = retryDelayMs_(
+            Math.max(0, maxRetryCount - 1),
+            QUEUE_RETRY_BASE_MS,
+            QUEUE_RETRY_MAX_MS,
+            QUEUE_RETRY_JITTER_MS
+          );
+          console.warn('送信再試行を分散待機します:', {
+            retryCount: maxRetryCount,
+            delayMs: waitMs
+          });
           setTimeout(processQueue, waitMs);
         } else {
           // 手動再送待ちへ退避したデータがあっても、他のキュー処理は継続する。
-          processQueue();
+          setTimeout(processQueue, randomInt_(120, 650));
         }
       }
     }
@@ -4776,8 +4907,10 @@
     }
 
     window.addEventListener('error', function(event) {
-      console.error(event.error || event.message);
-      showFatalAuthError('画面初期化エラー: ' + (event.message || '不明なエラー'));
+      const message = event && event.message
+        ? event.message
+        : '不明な画面処理エラー';
+      handleGlobalClientFailure_(message, 'window.error');
     });
 
 
@@ -4831,24 +4964,36 @@
         })
         .catch(function(error) {
           console.error('bootstrap background error:', error);
+          const message = error && error.message ? error.message : String(error);
+
+          if (isAuthErrorMessage_(message)) {
+            pauseForAuthentication_(message);
+            return;
+          }
+
           // 初期表示は止めない。担当者はtoken内の値で継続する。
           setBootStatus('ユーザー情報の取得が遅延しています。認証ユーザーで続行できます。', true);
         });
     }
 
     window.addEventListener('unhandledrejection', function(event) {
-      console.error(event.reason);
       const message = event.reason && event.reason.message
         ? event.reason.message
         : String(event.reason);
-      showFatalAuthError('通信または初期化エラー: ' + message);
+
+      // 一時的な通信失敗で画面全体を「認証エラー」に置き換えない。
+      // localStorageの未送信キューを保持したまま、既存の再試行処理に任せる。
+      if (event && typeof event.preventDefault === 'function') {
+        event.preventDefault();
+      }
+      handleGlobalClientFailure_(message, 'unhandledrejection');
     });
 
 
     const handyBootWatchdog = setTimeout(function() {
       const boot = document.getElementById('boot-status');
       if (boot && !boot.textContent) {
-        boot.textContent = '起動確認中... 画面が操作できない場合はChromeのサイトデータを削除してください。';
+        boot.textContent = '起動確認中... 通信状態を確認してください。未送信データは端末内に保持されています。';
         boot.style.color = '#b31412';
         boot.style.fontWeight = 'bold';
       }
@@ -4876,11 +5021,18 @@
           syncServerErrorsFromServer_({ silent: true }).catch(function() {});
         });
 
-        setTimeout(loadBootstrapInBackground_, 100);
+        // 同時起動時のbootstrap集中を少し分散する。
+        setTimeout(loadBootstrapInBackground_, randomInt_(100, 650));
 
       } catch (error) {
         console.error(error);
-        showFatalAuthError(error.message);
+        const message = error && error.message ? error.message : String(error);
+
+        if (isAuthErrorMessage_(message)) {
+          showFatalAuthError(message);
+        } else {
+          handleGlobalClientFailure_(message, 'DOMContentLoaded');
+        }
       }
     });
   </script>
