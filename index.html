@@ -1091,11 +1091,15 @@
     const SUBMIT_REQUEST_TIMEOUT_MS = 12000;
     const ACK_RETRY_COUNT = 6;
     const ACK_RETRY_INTERVAL_MS = 1200;
+    const SERVER_ERROR_AUTO_SYNC_INTERVAL_MS = 60000;
+    const SERVER_ERROR_AUTO_SYNC_MAX_IDS = 50;
 
     let apiQueue = [];
     let isApiProcessing = false;
     let activeBatchPickIds = {};
     let serverHistorySyncPromise = null;
+    let serverErrorAutoSyncPromise = null;
+    let serverErrorAutoSyncTimer = null;
     let historyItemActionState = {};
     let historyViewMode = 'all';
     let selectedHistoryPickIds = {};
@@ -2504,6 +2508,118 @@
       });
     }
 
+    function checkPicksServerStatus_(pickIds) {
+      if (!authToken || isAuthTokenExpired_()) {
+        return Promise.reject(new Error('認証期限が切れています。入口GASから開き直してください。'));
+      }
+
+      const ids = Array.from(new Set((pickIds || []).map(function(id) {
+        return String(id || '').trim();
+      }).filter(Boolean))).slice(0, SERVER_ERROR_AUTO_SYNC_MAX_IDS);
+
+      if (ids.length === 0) {
+        return Promise.resolve({ status: 'OK', items: [] });
+      }
+
+      const url = API_URL +
+        '?action=checkPicks' +
+        '&ids=' + encodeURIComponent(ids.join(',')) +
+        '&token=' + encodeURIComponent(authToken);
+
+      return jsonpRequest(url, 10000).then(function(result) {
+        if (!result || result.status !== 'OK') {
+          throw new Error(result && result.message ? result.message : 'サーバー一括確認エラー');
+        }
+        return result;
+      });
+    }
+
+    /**
+     * 管理者WebアプリでERRORがRESOLVEDへ変更された場合、
+     * 利用者が手動更新しなくてもハンディ側へ反映する。
+     * 通信負荷を抑えるため、現在SERVER_ERROR表示中のpickIdだけを確認する。
+     */
+    function syncServerErrorsFromServer_(options) {
+      const opts = options || {};
+
+      if (!authToken || isAuthTokenExpired_() || document.hidden) {
+        return Promise.resolve({ status: 'SKIPPED' });
+      }
+
+      if (serverErrorAutoSyncPromise) {
+        return serverErrorAutoSyncPromise;
+      }
+
+      const errorRows = loadPickHistory().filter(function(row) {
+        return getEffectiveHistoryStatus_(row) === 'SERVER_ERROR';
+      });
+
+      const ids = errorRows.map(function(row) { return row.pickId; })
+        .filter(Boolean)
+        .slice(0, SERVER_ERROR_AUTO_SYNC_MAX_IDS);
+
+      if (ids.length === 0) {
+        return Promise.resolve({ status: 'OK', items: [] });
+      }
+
+      serverErrorAutoSyncPromise = checkPicksServerStatus_(ids)
+        .then(function(result) {
+          let changed = false;
+
+          (result.items || []).forEach(function(entry) {
+            const pickId = String(entry && entry.pickId || '');
+            if (!pickId) return;
+
+            const beforeRow = loadPickHistory().find(function(row) {
+              return String(row.pickId || '') === pickId;
+            });
+            const beforeStatus = getEffectiveHistoryStatus_(beforeRow || {});
+
+            const applied = applySingleServerCheckResult_(pickId, {
+              found: entry && entry.found === true,
+              item: entry ? entry.item : null
+            });
+
+            if (applied.found && applied.status !== beforeStatus) {
+              changed = true;
+            }
+          });
+
+          if (changed) {
+            updateHistoryAccessUI_();
+            updateQueueUI();
+            if (isHistoryModalOpen_()) renderPickHistory();
+          }
+
+          return result;
+        })
+        .catch(function(error) {
+          if (!opts.silent) {
+            console.warn('ERROR自動同期に失敗:', error && error.message ? error.message : error);
+          }
+          throw error;
+        })
+        .finally(function() {
+          serverErrorAutoSyncPromise = null;
+        });
+
+      return serverErrorAutoSyncPromise;
+    }
+
+    function startServerErrorAutoSync_() {
+      if (serverErrorAutoSyncTimer) {
+        clearInterval(serverErrorAutoSyncTimer);
+      }
+
+      serverErrorAutoSyncTimer = setInterval(function() {
+        syncServerErrorsFromServer_({ silent: true }).catch(function() {});
+      }, SERVER_ERROR_AUTO_SYNC_INTERVAL_MS);
+
+      setTimeout(function() {
+        syncServerErrorsFromServer_({ silent: true }).catch(function() {});
+      }, 3000);
+    }
+
     function applySingleServerCheckResult_(pickId, result) {
       const target = String(pickId || '');
       const checkedAt = new Date().toISOString();
@@ -2530,6 +2646,7 @@
         person: item.person || '',
         purposeName: item.purposeName || '',
         jobNo: item.jobNo || '',
+        purpose: item.purpose || '',
         isDelete: item.isDelete === true,
         operationAt: item.operationAt || item.receivedAt || '',
         receivedAt: item.receivedAt || '',
@@ -2550,10 +2667,11 @@
       return { found: true, status: mappedStatus, item: item };
     }
     function showPickHistory() {
-      // 履歴は即表示する。開くたびの500件全体同期は行わない。
-      // 個別確認はcheckPick、全体同期は「サーバー履歴更新」で明示実行する。
+      // 履歴は即表示する。500件全体同期は手動更新に限定し、
+      // 管理者対応の反映確認はSERVER_ERRORだけを軽量同期する。
       document.getElementById('pick-history-modal').style.display = 'flex';
       renderPickHistory();
+      syncServerErrorsFromServer_({ silent: true }).catch(function() {});
     }
 
     function closePickHistory() {
@@ -2970,6 +3088,7 @@
               person: item.person,
               purposeName: item.purposeName,
               jobNo: item.jobNo,
+              purpose: item.purpose || '',
               isDelete: item.isDelete === true,
               status: item.status,
               serverStatus: item.status,
@@ -4702,9 +4821,13 @@
           updateHistoryAccessUI_();
 
           // 起動時にもサーバー履歴と照合し、古いSENDING/ERROR表示を補正する。
-          syncServerHistory_({ silent: true }).catch(function(error) {
-            console.warn('startup history sync failed:', error && error.message ? error.message : error);
-          });
+          syncServerHistory_({ silent: true })
+            .then(function() {
+              return syncServerErrorsFromServer_({ silent: true });
+            })
+            .catch(function(error) {
+              console.warn('startup history sync failed:', error && error.message ? error.message : error);
+            });
         })
         .catch(function(error) {
           console.error('bootstrap background error:', error);
@@ -4742,6 +4865,16 @@
         applyLoginUserFromTokenFallback_();
         initQueue();
         updateHistoryAccessUI_();
+        startServerErrorAutoSync_();
+
+        document.addEventListener('visibilitychange', function() {
+          if (!document.hidden) {
+            syncServerErrorsFromServer_({ silent: true }).catch(function() {});
+          }
+        });
+        window.addEventListener('focus', function() {
+          syncServerErrorsFromServer_({ silent: true }).catch(function() {});
+        });
 
         setTimeout(loadBootstrapInBackground_, 100);
 
