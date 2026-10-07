@@ -5451,14 +5451,11 @@
     });
 
 
-    const handyBootWatchdog = setTimeout(function() {
-      const boot = document.getElementById('boot-status');
-      if (boot && !boot.textContent) {
-        boot.textContent = '起動確認中... 通信状態を確認してください。未送信データは端末内に保持されています。';
-        boot.style.color = '#b31412';
-        boot.style.fontWeight = 'bold';
-      }
-    }, 8000);
+    // v1.4.1:
+    // bootstrapApp() 成功時は setBootStatus('') で表示を消す。
+    // 旧8秒watchdogは「表示が空＝起動失敗」と誤判定し、正常起動後にも
+    // エラー表示を出していたため削除。実際のbootstrap失敗/遅延は
+    // jsonpRequest(15秒) のreject → loadBootstrapInBackground_().catch() で表示する。
 
     window.addEventListener('DOMContentLoaded', function() {
       try {
