@@ -1087,24 +1087,18 @@
     const HISTORY_RETENTION_DAYS = 7;
     const HISTORY_MAX_RESOLVED_ITEMS = 500;
 
-    // ===== ハイブリッド送信 v1.3 =====
-    // 通常作業中は10件単位。利用者は通信完了を待たず次の読取を継続する。
-    // 10件未満でも、最古データ45秒または無操作25秒でバックグラウンド送信する。
-    // 作業終了時は利用者操作1回で残件を回収し、内部では最大30件ずつ直列送信する。
-    const NORMAL_BATCH_ITEMS = 10;
-    const FINISH_BATCH_ITEMS = 30;
-    const MAX_BATCH_ITEMS = FINISH_BATCH_ITEMS;
-    const NORMAL_MAX_WAIT_MS = 45000;
-    const NORMAL_IDLE_FLUSH_MS = 25000;
-    const NORMAL_SEND_SLOT_CYCLE_MS = 10000;
-    const NORMAL_SEND_SLOT_JITTER_MS = 500;
-    const FINISH_START_SPREAD_MAX_MS = 5000;
-    const MAX_AUTO_RETRY_COUNT = 3;
-    const FINISH_MAX_AUTO_RETRY_COUNT = 5;
-    const SUBMIT_REQUEST_TIMEOUT_MS = 12000;
+    // ===== 作業終了時 一括送信 v1.4 =====
+    // 作業中は通信を一切行わず、確定データを端末localStorageへ保持する。
+    // 作業終了時に、その作業セッションの全件を1回のPOSTでRegistration GASへ送信する。
+    // GAS受信後の実データ反映はサーバー側で30件単位に内部処理する。
+    const ONE_SHOT_MAX_ITEMS = 2000;
+    const SUBMIT_REQUEST_TIMEOUT_MS = 60000;
+    const BATCH_SUMMARY_RETRY_COUNT = 4;
+    const BATCH_SUMMARY_RETRY_BASE_MS = 1500;
+    const BATCH_SUMMARY_RETRY_MAX_MS = 8000;
+    const BATCH_SUMMARY_RETRY_JITTER_MS = 1200;
 
-    // 複数端末が同時利用された時に再試行タイミングが同期しないよう、
-    // ACK確認と送信再試行は指数バックオフ + ランダムジッターで分散する。
+    // 既存の個別履歴確認等で利用する再試行定数。
     const ACK_RETRY_COUNT = 6;
     const ACK_RETRY_BASE_MS = 700;
     const ACK_RETRY_MAX_MS = 4500;
@@ -1137,7 +1131,7 @@
     let wakeLockRequestInFlight = false;
     let transientClientErrorTimer = null;
 
-    // ハイブリッド送信制御
+    // 作業終了時一括送信制御
     let hybridSendTimer = null;
     let lastQueueActivityAt = 0;
     let finishDrainMode = false;
@@ -1145,6 +1139,8 @@
     let finishRecoveryInProgress = false;
     let finishRecoveryComplete = false;
     let finishRecoveryError = '';
+    let oneShotSendRequested = false;
+    let finishServerErrorCount = 0;
 
     let lastScannedCode = "";
     let scanMatchCount = 0;
@@ -1403,11 +1399,11 @@
     function showOfflineOverlay() {
       const overlay = document.getElementById('offline-overlay');
 
-      // v1.3: 作業中は通信断で読取作業を止めない。
-      // 確定データはlocalStorageへ保持し、通信復旧または作業終了時に回収する。
+      // v1.4: 作業中は通信を行わない。
+      // 確定データはlocalStorageへ保持し、作業終了時に全件を一括送信する。
       if (currentWorkSessionId || (currentStep >= 3 && currentStep <= 6)) {
         if (overlay) overlay.style.display = 'none';
-        setBootStatus('通信が切断されています。作業データは端末内へ保存し、通信復旧後に自動送信します。', true);
+        setBootStatus('通信が切断されています。作業データは端末内へ保存されています。作業終了時に通信可能な状態で一括送信してください。', true);
         updateQueueUI();
         return;
       }
@@ -1424,14 +1420,10 @@
         setBootStatus('');
       }
 
-      if (finishDrainMode) {
-        if (finishRecoveryRequested || finishRecoveryError) {
-          setTimeout(startFinishRecovery_, randomInt_(300, 1200));
-        } else if (apiQueue.length > 0) {
-          setTimeout(processQueue, randomInt_(200, 800));
-        }
-      } else {
-        scheduleHybridQueueSend_('online');
+      // 作業中は通信復旧しても自動送信しない。
+      // 終了画面で一括送信が停止していた場合だけ、利用者操作を待つ。
+      if (finishDrainMode && finishRecoveryError) {
+        updateQueueUI();
       }
 
       if (currentStep === 2) { startCamera('video-job'); } 
@@ -1928,7 +1920,7 @@
         const status = String(row.status || '');
         const serverStatus = String(row.serverStatus || '');
 
-        // GAS受信済み・登録済み・登録側ERRORは端末の自動送信キューから外す。
+        // GAS受信済み・登録済み・登録側ERRORは端末の未送信キューから外す。
         // SERVER ERRORは履歴から手動で再送する。
         return !(
           status === 'RECEIVED' ||
@@ -1951,9 +1943,9 @@
         }
 
         // ページ再読込後は前回のfetch/ACK待機処理は存在しない。
-        // SENDINGのまま取り残されたデータは即PENDINGへ戻して再送対象にする。
+        // SENDINGのまま取り残されたデータはPENDINGへ戻し、次回一括送信時の事前確認対象にする。
         pick.status = 'PENDING';
-        pick.lastError = '前回の送信処理が完了確認できなかったため自動再送します。';
+        pick.lastError = '前回の一括送信の受信確認が完了していません。次回一括送信時にサーバー確認します。';
         pick.lastErrorAt = new Date().toISOString();
 
         updatePickHistoryStatus(pick.pickId, 'PENDING', {
@@ -2394,7 +2386,7 @@
 
       if (!confirm(
         eligibleRows.length + '件を同じpickIdのまま強制再送しますか？\n' +
-        '送信は既存の30件バッチ・直列処理で行います。'
+        '選択データは1回のPOSTで一括送信します。'
       )) return;
 
       setHistoryBulkActionState_('resending');
@@ -2418,7 +2410,9 @@
           return;
         }
 
-        // 複数行からprocessQueueを呼ばず、最後に1回だけ開始する。
+        // 選択した再送データを1回のPOSTで送信する。
+        finishDrainMode = true;
+        oneShotSendRequested = true;
         processQueue();
 
         if (result.skippedIds.length > 0) {
@@ -2560,7 +2554,7 @@
         });
         setHistoryBulkActionState_('');
         if (!isApiProcessing && apiQueue.length > 0) {
-          processQueue();
+          updateQueueUI();
         }
       }
     }
@@ -3082,6 +3076,57 @@
       return jsonpRequest(url, 10000);
     }
 
+    function checkBatchSummary_(batchId, expectedCount) {
+      const url = API_URL +
+        '?action=checkBatchSummary' +
+        '&batchId=' + encodeURIComponent(batchId) +
+        '&expectedCount=' + encodeURIComponent(String(expectedCount)) +
+        '&token=' + encodeURIComponent(authToken);
+
+      return jsonpRequest(url, 15000);
+    }
+
+    async function waitForBatchSummaryAck_(batchId, expectedCount) {
+      let lastResult = null;
+
+      for (let i = 0; i < BATCH_SUMMARY_RETRY_COUNT; i++) {
+        try {
+          lastResult = await checkBatchSummary_(batchId, expectedCount);
+
+          if (lastResult && lastResult.status === 'OK' && lastResult.received === true) {
+            return lastResult;
+          }
+
+          if (
+            lastResult &&
+            lastResult.status === 'ERROR' &&
+            isAuthErrorMessage_(lastResult.message)
+          ) {
+            throw new Error(lastResult.message || '認証期限が切れています。');
+          }
+        } catch (error) {
+          if (isAuthErrorMessage_(error && error.message)) {
+            throw error;
+          }
+          lastResult = { status: 'ERROR', message: error && error.message ? error.message : String(error) };
+        }
+
+        if (i < BATCH_SUMMARY_RETRY_COUNT - 1) {
+          await sleepMs_(retryDelayMs_(
+            i,
+            BATCH_SUMMARY_RETRY_BASE_MS,
+            BATCH_SUMMARY_RETRY_MAX_MS,
+            BATCH_SUMMARY_RETRY_JITTER_MS
+          ));
+        }
+      }
+
+      return lastResult || {
+        status: 'ERROR',
+        message: 'GAS受信確認が取れませんでした。'
+      };
+    }
+
     async function waitForBatchAck(batchId, pickIds) {
       let lastResult = null;
       const targetIds = Array.from(new Set(
@@ -3450,8 +3495,9 @@
           return;
         }
 
-        // processQueue内で当該データが選ばれた瞬間にSENDINGへ変わり、
-        // saveQueueToStorage()経由で履歴表示も「送信中」へ自動追従する。
+        // 手動再送は1回のPOSTで送信する。
+        finishDrainMode = true;
+        oneShotSendRequested = true;
         processQueue();
       } catch (error) {
         setHistoryItemActionState_(target, '');
@@ -3486,7 +3532,7 @@
       }
 
       // 表示上「サーバー未受信確認済み」であっても、取消直前に必ず再確認する。
-      // 確認中に自動送信の次バッチへ選ばれないよう、一時ガードする。
+      // 確認中に手動一括送信の対象へ入らないよう、一時ガードする。
       setPickCancellationGuard_(target, true);
       setHistoryItemActionState_(target, 'cancelling');
 
@@ -3503,7 +3549,7 @@
           return;
         }
 
-        // サーバー確認待ちの間に自動送信が開始されていないか、削除直前に再確認する。
+        // サーバー確認待ちの間に手動一括送信が開始されていないか、削除直前に再確認する。
         if (isPickActive_(target)) {
           alert('サーバー確認中に送信が開始されたため、取消を中止しました。送信結果を確認してください。');
           return;
@@ -3546,7 +3592,7 @@
         setPickCancellationGuard_(target, false);
         setHistoryItemActionState_(target, '');
         if (!isApiProcessing && apiQueue.length > 0) {
-          processQueue();
+          updateQueueUI();
         }
       }
     }
@@ -3578,13 +3624,15 @@
       updateQueueUI();
 
       if (apiQueue.length > 0) {
-        // 前回未送信が残っている場合は、新規作業より先に終了時回収モードで照合する。
+        // 前回の未送信データは勝手に再送しない。
+        // 現場回線が不安定なため、終了画面から利用者が明示的に一括送信する。
         goToStep(6);
-        setBootStatus('前回の未送信データを確認しています。サーバー照合後、未受信分だけ再送します。', true);
         finishDrainMode = true;
-        finishRecoveryRequested = true;
+        finishRecoveryRequested = false;
         finishRecoveryComplete = false;
-        setTimeout(startFinishRecovery_, randomInt_(500, 1800));
+        finishRecoveryError = '前回の未送信データが端末内に残っています。通信可能な状態で「全件を一括送信」を押してください。';
+        setBootStatus(finishRecoveryError, true);
+        updateQueueUI();
       }
     }
     function saveQueueToStorage() {
@@ -3654,58 +3702,10 @@
     }
 
     function scheduleHybridQueueSend_(reason) {
+      // v1.4: 作業中の自動送信は廃止。
+      // 互換性のため関数だけ残し、何も送信しない。
       clearHybridSendTimer_();
-
-      if (finishDrainMode || finishRecoveryRequested || finishRecoveryInProgress) return;
-      if (isApiProcessing) return;
-      if (!navigator.onLine) return;
-      if (!authToken || isAuthTokenExpired_()) return;
-
-      const candidates = getSendableQueueCandidates_();
-      if (candidates.length === 0) return;
-
-      const contextKey = queueContextKey(candidates[0]);
-      const sameContext = candidates.filter(function(pick) {
-        return queueContextKey(pick) === contextKey;
-      });
-      if (sameContext.length === 0) return;
-
-      const now = Date.now();
-      const oldestMs = Math.min.apply(null, sameContext.map(queueTimeMs_));
-      const oldestAge = Math.max(0, now - oldestMs);
-      const maxWaitRemaining = Math.max(0, NORMAL_MAX_WAIT_MS - oldestAge);
-
-      const activityBase = lastQueueActivityAt || Math.max.apply(null, sameContext.map(queueTimeMs_));
-      const idleAge = Math.max(0, now - activityBase);
-      const idleRemaining = Math.max(0, NORMAL_IDLE_FLUSH_MS - idleAge);
-
-      let delayMs;
-      let trigger = String(reason || 'scheduled');
-
-      if (sameContext.length >= NORMAL_BATCH_ITEMS) {
-        // 10件到達時はユーザー固有スロットで端末間のPOST集中を避ける。
-        delayMs = Math.min(msUntilNextUserSendSlot_(), maxWaitRemaining);
-        trigger = 'batch-ready';
-      } else {
-        // 10件未満は無操作25秒または最古45秒の早い方。
-        delayMs = Math.min(idleRemaining, maxWaitRemaining);
-        if (delayMs > 0) {
-          delayMs = Math.min(maxWaitRemaining, delayMs + randomInt_(0, 400));
-        }
-        trigger = maxWaitRemaining <= idleRemaining ? 'max-wait' : 'idle-flush';
-      }
-
-      delayMs = Math.max(0, Number(delayMs) || 0);
-      hybridSendTimer = setTimeout(function() {
-        hybridSendTimer = null;
-        processQueue();
-      }, delayMs);
-
-      console.debug('hybrid send scheduled:', {
-        trigger: trigger,
-        pendingInContext: sameContext.length,
-        delayMs: delayMs
-      });
+      return;
     }
 
     function getCurrentWorkSessionRows_() {
@@ -3942,27 +3942,37 @@
       clearHybridSendTimer_();
       finishDrainMode = true;
       finishRecoveryComplete = false;
+      finishServerErrorCount = 0;
 
-      if (finishRecoveryInProgress) return;
-
-      // 既に送信中のバッチは結果確定まで待ち、その後に全件照合する。
-      if (isApiProcessing) {
-        finishRecoveryRequested = true;
-        updateQueueUI();
-        setTimeout(startFinishRecovery_, 500);
+      if (isApiProcessing || finishRecoveryInProgress) {
         return;
       }
 
       if (!navigator.onLine) {
-        finishRecoveryRequested = true;
-        finishRecoveryError = '通信が切断されています。データは端末内に保持されています。';
+        finishRecoveryRequested = false;
+        finishRecoveryError = '通信が切断されています。全データは端末内に保持されています。通信回復後に「全件を一括送信」を押してください。';
         updateQueueUI();
         return;
       }
 
       if (!authToken || isAuthTokenExpired_()) {
-        finishRecoveryRequested = true;
-        finishRecoveryError = '認証期限切れのため終了時送信を開始できません。';
+        finishRecoveryRequested = false;
+        finishRecoveryError = '認証期限切れのため一括送信を開始できません。データは端末内に保持されています。';
+        updateQueueUI();
+        return;
+      }
+
+      if (apiQueue.length === 0) {
+        finishRecoveryComplete = true;
+        finishRecoveryError = '';
+        finishDrainMode = false;
+        updateQueueUI();
+        return;
+      }
+
+      if (apiQueue.length > ONE_SHOT_MAX_ITEMS) {
+        finishRecoveryRequested = false;
+        finishRecoveryError = '一括送信上限 ' + ONE_SHOT_MAX_ITEMS + '件を超えています。管理者へ連絡してください。';
         updateQueueUI();
         return;
       }
@@ -3970,65 +3980,26 @@
       finishRecoveryRequested = false;
       finishRecoveryInProgress = true;
       finishRecoveryError = '';
+      oneShotSendRequested = true;
       updateQueueUI();
 
       try {
-        // 複数ユーザーが同時に「作業終了」を押した際の集中を避ける。
-        const spreadMs = Math.min(FINISH_START_SPREAD_MAX_MS, msUntilNextUserSendSlot_());
-        if (spreadMs > 0) await sleepMs_(spreadMs);
-
-        // まず過去に送信を試みたデータをbatchId + pickId + userで照合し、
-        // GAS受信済みのものを再送対象から除外する。
-        await reconcileAttemptedRowsForFinish_();
-
-        const resendCount = prepareMissingRowsForFinishResend_();
+        await processQueue();
+      } finally {
         finishRecoveryInProgress = false;
+        oneShotSendRequested = false;
         updateQueueUI();
-
-        if (resendCount > 0) {
-          setTimeout(processQueue, randomInt_(150, 600));
-        } else {
-          maybeCompleteFinishRecovery_();
-        }
-      } catch (error) {
-        finishRecoveryInProgress = false;
-        finishRecoveryRequested = false;
-        finishRecoveryError = error && error.message ? error.message : String(error);
-
-        if (isAuthErrorMessage_(finishRecoveryError)) {
-          pauseForAuthentication_(finishRecoveryError);
-        }
-
-        updateQueueUI();
-        console.error('finish recovery failed:', error);
       }
     }
 
     function retryFinishRecovery_() {
       finishRecoveryError = '';
-      finishRecoveryRequested = true;
       startFinishRecovery_();
     }
 
     function getNextBatch() {
-      const candidates = apiQueue.filter(function(pick) {
-        return (pick.status === 'PENDING' || pick.status === 'ERROR') &&
-          !isPickCancellationGuarded_(pick.pickId);
-      });
-
-      if (candidates.length === 0) {
-        return [];
-      }
-
-      const key = queueContextKey(candidates[0]);
-
-      const batchLimit = finishDrainMode ? FINISH_BATCH_ITEMS : NORMAL_BATCH_ITEMS;
-
-      return candidates
-        .filter(function(pick) {
-          return queueContextKey(pick) === key;
-        })
-        .slice(0, batchLimit);
+      // v1.4互換用。作業中の分割送信は行わず、一括送信対象をそのまま返す。
+      return getOneShotQueueItems_();
     }
 
     function movePickToManualRetry_(pick, errorMessage, batchId) {
@@ -4049,8 +4020,87 @@
       updateHistoryStatus(pick.pickId, 'error', '要手動再送');
     }
 
+    function getOneShotQueueItems_() {
+      return apiQueue.filter(function(pick) {
+        return pick &&
+          ['PENDING', 'ERROR', 'RETRY_REQUIRED', 'SENDING'].indexOf(String(pick.status || '')) !== -1 &&
+          !isPickCancellationGuarded_(pick.pickId);
+      });
+    }
+
+    function finalizeOneShotReceipt_(batchId, batchItems, summary) {
+      const batchPickIds = {};
+      batchItems.forEach(function(pick) {
+        batchPickIds[String(pick.pickId || '')] = true;
+      });
+
+      const nowIso = new Date().toISOString();
+      const statusCounts = summary && summary.statusCounts ? summary.statusCounts : {};
+      finishServerErrorCount = Number(statusCounts.ERROR || 0);
+
+      batchItems.forEach(function(pick) {
+        updatePickHistoryStatus(pick.pickId, 'RECEIVED', {
+          batchId: batchId,
+          receivedAt: nowIso,
+          serverStatus: 'RECEIVED',
+          serverFound: true,
+          serverCheckedAt: nowIso,
+          lastError: '',
+          lastErrorAt: ''
+        });
+        updateHistoryStatus(pick.pickId, 'ok', 'GAS受信済み');
+      });
+
+      apiQueue = apiQueue.filter(function(pick) {
+        return !batchPickIds[String(pick && pick.pickId || '')];
+      });
+
+      isApiProcessing = false;
+      activeBatchPickIds = {};
+      finishRecoveryComplete = true;
+      finishRecoveryRequested = false;
+      finishRecoveryError = '';
+      finishDrainMode = false;
+      oneShotSendRequested = false;
+      saveQueueToStorage();
+      releaseScreenWakeLock_();
+      updateQueueUI();
+    }
+
+    function markOneShotUnconfirmed_(batchId, batchItems, message) {
+      const nowIso = new Date().toISOString();
+      const errorText = String(message || 'GAS受信確認が取れませんでした。');
+
+      batchItems.forEach(function(pick) {
+        pick.status = 'RETRY_REQUIRED';
+        pick.batchId = batchId;
+        pick.lastError = errorText;
+        pick.lastErrorAt = nowIso;
+
+        updatePickHistoryStatus(pick.pickId, 'RETRY_REQUIRED', {
+          batchId: batchId,
+          lastError: errorText,
+          lastErrorAt: nowIso,
+          serverStatus: '',
+          serverFound: null,
+          serverCheckedAt: ''
+        });
+        updateHistoryStatus(pick.pickId, 'error', '受信確認待ち');
+      });
+
+      isApiProcessing = false;
+      activeBatchPickIds = {};
+      finishRecoveryComplete = false;
+      finishRecoveryRequested = false;
+      finishRecoveryError = errorText + ' データは端末内に保持されています。「全件を一括送信」で再確認後、必要な場合だけ同じbatchIdで再送します。';
+      finishDrainMode = true;
+      oneShotSendRequested = false;
+      saveQueueToStorage();
+      updateQueueUI();
+    }
+
     async function processQueue() {
-      if (finishRecoveryInProgress) {
+      if (!oneShotSendRequested) {
         updateQueueUI();
         return;
       }
@@ -4060,54 +4110,77 @@
         return;
       }
 
-      if (apiQueue.length === 0) {
-        if (finishDrainMode) maybeCompleteFinishRecovery_();
-        else updateQueueUI();
+      const batchItems = getOneShotQueueItems_();
+
+      if (batchItems.length === 0) {
+        finishRecoveryComplete = true;
+        finishRecoveryError = '';
+        finishDrainMode = false;
+        oneShotSendRequested = false;
+        updateQueueUI();
         return;
       }
 
       if (!navigator.onLine) {
-        isApiProcessing = false;
-        saveQueueToStorage();
-        if (finishDrainMode) {
-          finishRecoveryError = '通信が切断されています。未送信データは端末内に保持されています。';
-        }
+        finishRecoveryError = '通信が切断されています。全データは端末内に保持されています。';
+        oneShotSendRequested = false;
         updateQueueUI();
         return;
       }
 
       if (!authToken || isAuthTokenExpired_()) {
-        // 認証切れはデータエラーではない。
-        // キュー状態を変更せずlocalStorageへ保持し、再認証後に続きから再開する。
-        isApiProcessing = false;
-        saveQueueToStorage();
-        return;
-      }
-
-      const batchItems = getNextBatch();
-
-      if (batchItems.length === 0) {
+        finishRecoveryError = '認証期限切れのため一括送信できません。全データは端末内に保持されています。';
+        oneShotSendRequested = false;
         updateQueueUI();
         return;
       }
 
-      isApiProcessing = true;
+      if (batchItems.length > ONE_SHOT_MAX_ITEMS) {
+        finishRecoveryError = '一括送信上限 ' + ONE_SHOT_MAX_ITEMS + '件を超えています。';
+        oneShotSendRequested = false;
+        updateQueueUI();
+        return;
+      }
 
-      const batchId = createClientId('batch');
+      const contextKeys = {};
+      batchItems.forEach(function(pick) {
+        contextKeys[queueContextKey(pick)] = true;
+      });
+
+      if (Object.keys(contextKeys).length !== 1) {
+        finishRecoveryError = '異なる作業条件の未送信データが混在しています。誤登録防止のため一括送信を停止しました。';
+        oneShotSendRequested = false;
+        updateQueueUI();
+        return;
+      }
+
+      // 前回のPOST応答が不明だった場合は、同じbatchIdを使ってまずサーバーを確認する。
+      const existingBatchIds = Array.from(new Set(batchItems.map(function(pick) {
+        return String(pick.batchId || '').trim();
+      }).filter(Boolean)));
+
+      if (existingBatchIds.length > 1) {
+        finishRecoveryError = '旧分割送信の複数batchIdが端末内に残っています。誤再送防止のため一括送信を停止しました。管理者へ連絡してください。';
+        oneShotSendRequested = false;
+        updateQueueUI();
+        return;
+      }
+
+      let batchId = existingBatchIds.length === 1
+        ? existingBatchIds[0]
+        : createClientId('batch');
+
+      const hadExistingSingleBatch = existingBatchIds.length === 1;
       const now = new Date().toISOString();
-
-      activeBatchPickIds = {};
 
       batchItems.forEach(function(pick) {
         activeBatchPickIds[pick.pickId] = true;
         pick.batchId = batchId;
         pick.status = 'SENDING';
         pick.lastTryAt = now;
-        pick.retryCount = Number(pick.retryCount || 0);
-        // 前回試行のエラー表示を残したまま新しい送信を開始しない。
         pick.lastError = '';
         pick.lastErrorAt = '';
-        pick.serverStatus = '';
+
         updatePickHistoryStatus(pick.pickId, 'SENDING', {
           batchId: batchId,
           lastTryAt: now,
@@ -4117,13 +4190,13 @@
           serverFound: null,
           serverCheckedAt: ''
         });
-        updateHistoryStatus(pick.pickId, 'saving', '送信中...');
+        updateHistoryStatus(pick.pickId, 'saving', '一括送信中...');
       });
 
+      isApiProcessing = true;
       saveQueueToStorage();
 
       const first = batchItems[0];
-
       const payload = {
         batchId: batchId,
         jobNo: first.jobNo || '',
@@ -4144,254 +4217,53 @@
       };
 
       try {
+        // 同じbatchIdで前回送信済みの可能性がある場合、再POST前に1回だけ確認する。
+        if (hadExistingSingleBatch) {
+          try {
+            const precheck = await checkBatchSummary_(batchId, batchItems.length);
+            if (precheck && precheck.status === 'OK' && precheck.received === true) {
+              finalizeOneShotReceipt_(batchId, batchItems, precheck);
+              return;
+            }
+          } catch (precheckError) {
+            if (isAuthErrorMessage_(precheckError && precheckError.message)) {
+              throw precheckError;
+            }
+            // 確認できないだけでは送信済みと断定しない。下の一括POSTへ進む。
+          }
+        }
+
         const submitResult = await sendSubmitRequest_(payload);
 
-        // POST応答が取得できなくても、GAS側では受信済みの可能性がある。
-        // ここでは失敗確定にせず、必ずcheckBatchへ進む。
         if (!submitResult.ok) {
-          console.warn('submit transport uncertain:', submitResult.error);
-          batchItems.forEach(function(pick) {
-            updateHistoryStatus(
-              pick.pickId,
-              'saving',
-              submitResult.timedOut
-                ? '送信応答タイムアウト・GAS受信確認中...'
-                : '送信応答不明・GAS受信確認中...'
-            );
-          });
+          console.warn('one-shot submit transport uncertain:', submitResult.error);
         }
 
-        const pickIds = batchItems.map(function(pick) {
-          return pick.pickId;
-        });
+        // データPOSTはここで1回だけ。以降はbatchId + 件数だけの軽量確認通信。
+        const summary = await waitForBatchSummaryAck_(batchId, batchItems.length);
 
-        const ack = await waitForBatchAck(batchId, pickIds);
-        const receivedIds = Array.isArray(ack.receivedPickIds) ? ack.receivedPickIds : [];
-        const registeredIds = Array.isArray(ack.registeredPickIds) ? ack.registeredPickIds : [];
-        const errorIds = Array.isArray(ack.errorPickIds) ? ack.errorPickIds : [];
-        const errorMap = ack.errors || {};
-
-        const receivedMap = {};
-        const registeredMap = {};
-        const errorMapById = {};
-
-        receivedIds.forEach(function(id) { receivedMap[id] = true; });
-        registeredIds.forEach(function(id) { registeredMap[id] = true; });
-        errorIds.forEach(function(id) { errorMapById[id] = true; });
-
-        const batchPickIdSet = {};
-        batchItems.forEach(function(pick) {
-          batchPickIdSet[pick.pickId] = true;
-        });
-
-        let hasUnconfirmed = false;
-
-        apiQueue = apiQueue.filter(function(pick) {
-          // 今回のバッチ以外、または手動再送でbatchIdが更新されたキューには触れない。
-          // 古い非同期ACKが新しい再送予約を消さないための世代チェック。
-          if (!batchPickIdSet[pick.pickId] || String(pick.batchId || '') !== batchId) {
-            return true;
-          }
-
-          if (errorMapById[pick.pickId]) {
-            // 登録GAS側のERRORは「サーバーが受信済み」の終端状態。
-            // 端末から再送すると二重処理の原因になるため、端末キューからは外し、履歴にERRORを残す。
-            pick.status = 'ERROR';
-            pick.lastError = errorMap[pick.pickId] || '登録側エラー';
-            updatePickHistoryStatus(pick.pickId, 'ERROR', {
-              batchId: batchId,
-              lastError: pick.lastError,
-              serverStatus: 'ERROR',
-              serverFound: true,
-              serverCheckedAt: new Date().toISOString()
-            });
-            updateHistoryStatus(pick.pickId, 'error', '登録側エラー');
-            return false;
-          }
-
-          if (!receivedMap[pick.pickId]) {
-            // 部分ACK時にSENDINGのまま取り残さない。
-            pick.retryCount = Number(pick.retryCount || 0) + 1;
-
-            const retryLimit = finishDrainMode ? FINISH_MAX_AUTO_RETRY_COUNT : MAX_AUTO_RETRY_COUNT;
-            if (pick.retryCount >= retryLimit) {
-              movePickToManualRetry_(
-                pick,
-                'GAS受信確認が取れない状態が続いたため、自動再送を停止しました。履歴から強制再送してください。',
-                batchId
-              );
-              return false;
-            }
-
-            // 上限未満は未確認分だけPENDINGへ戻し、自動再送する。
-            pick.status = 'PENDING';
-            pick.lastError = 'GAS受信確認が未完了のため自動再送します。';
-            pick.lastErrorAt = new Date().toISOString();
-            hasUnconfirmed = true;
-
-            updatePickHistoryStatus(pick.pickId, 'PENDING', {
-              batchId: batchId,
-              retryCount: pick.retryCount,
-              lastError: pick.lastError,
-              lastErrorAt: pick.lastErrorAt,
-              serverStatus: ''
-            });
-            updateHistoryStatus(pick.pickId, 'saving', '受信確認待ち・自動再送');
-            return true;
-          }
-
-          const nextStatus = registeredMap[pick.pickId] ? 'REGISTERED' : 'RECEIVED';
-
-          updatePickHistoryStatus(pick.pickId, nextStatus, {
-            batchId: batchId,
-            receivedAt: new Date().toISOString(),
-            serverStatus: nextStatus,
-            serverFound: true,
-            serverCheckedAt: new Date().toISOString()
-          });
-
-          if (pick.isDelete) {
-            const li = document.getElementById(pick.pickId);
-            if (li) li.remove();
-            delete historyContexts[pick.pickId];
-          } else {
-            updateHistoryStatus(pick.pickId, 'ok', nextStatus === 'REGISTERED' ? '登録済み' : 'GAS受信済み');
-          }
-
-          return false;
-        });
-
-        isApiProcessing = false;
-        activeBatchPickIds = {};
-        saveQueueToStorage();
-
-        if (finishDrainMode) {
-          if (finishRecoveryRequested) {
-            setTimeout(startFinishRecovery_, 250);
-          } else if (apiQueue.length > 0) {
-            // 終了時は利用者には一括処理として見せつつ、内部は最大30件ずつ直列送信する。
-            setTimeout(processQueue, randomInt_(180, 700));
-          } else {
-            maybeCompleteFinishRecovery_();
-          }
-        } else if (hasUnconfirmed) {
-          const partialRetryCount = Math.max.apply(null, batchItems.map(function(pick) {
-            return Number(pick.retryCount || 0);
-          }));
-          const waitMs = retryDelayMs_(
-            Math.max(0, partialRetryCount - 1),
-            PARTIAL_ACK_RETRY_BASE_MS,
-            PARTIAL_ACK_RETRY_MAX_MS,
-            PARTIAL_ACK_RETRY_JITTER_MS
-          );
-          console.warn('未ACK分の再送を分散待機します:', { batchId: batchId, delayMs: waitMs });
-          setTimeout(processQueue, waitMs);
-        } else {
-          // 通常作業中は1バッチ送信後、次の10件/無操作25秒/最大45秒条件まで待つ。
-          scheduleHybridQueueSend_('batch-complete');
-        }
-
-      } catch (error) {
-        const errorMessage = error && error.message
-          ? error.message
-          : String(error);
-
-        if (isAuthErrorMessage_(errorMessage)) {
-          // 認証切れでは送信データをERROR扱いしない。
-          // PENDINGへ戻してlocalStorageに保持し、再認証後に同じpickIdで再送する。
-          batchItems.forEach(function(pick) {
-            if (String(pick.batchId || '') !== batchId) return;
-
-            pick.status = 'PENDING';
-            pick.lastError = '認証期限切れのため送信を一時停止しています。';
-            pick.lastErrorAt = new Date().toISOString();
-
-            updatePickHistoryStatus(pick.pickId, 'PENDING', {
-              batchId: batchId,
-              lastError: pick.lastError,
-              lastErrorAt: pick.lastErrorAt
-            });
-
-            updateHistoryStatus(pick.pickId, 'saving', '再認証待ち');
-          });
-
-          sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-          authToken = '';
-          isApiProcessing = false;
-          activeBatchPickIds = {};
-          saveQueueToStorage();
-          console.warn('batch paused by auth expiry:', errorMessage);
+        if (summary && summary.status === 'OK' && summary.received === true) {
+          finalizeOneShotReceipt_(batchId, batchItems, summary);
           return;
         }
 
-        const failedBatchIds = {};
-        batchItems.forEach(function(pick) {
-          failedBatchIds[pick.pickId] = true;
-        });
+        const found = summary && Number.isFinite(Number(summary.foundCount))
+          ? Number(summary.foundCount)
+          : 0;
+        markOneShotUnconfirmed_(
+          batchId,
+          batchItems,
+          '一括送信後のGAS受信確認が完了しませんでした。確認済み ' + found + ' / ' + batchItems.length + '件。'
+        );
+      } catch (error) {
+        const message = error && error.message ? error.message : String(error);
 
-        let hasAutoRetry = false;
-        let maxRetryCount = 1;
-
-        apiQueue = apiQueue.filter(function(pick) {
-          if (!failedBatchIds[pick.pickId] || String(pick.batchId || '') !== batchId) {
-            return true;
-          }
-
-          pick.retryCount = Number(pick.retryCount || 0) + 1;
-          maxRetryCount = Math.max(maxRetryCount, pick.retryCount);
-
-          const retryLimit = finishDrainMode ? FINISH_MAX_AUTO_RETRY_COUNT : MAX_AUTO_RETRY_COUNT;
-          if (pick.retryCount >= retryLimit) {
-            movePickToManualRetry_(
-              pick,
-              errorMessage + ' / 自動再送上限に達したため履歴から強制再送してください。',
-              batchId
-            );
-            return false;
-          }
-
-          pick.status = 'ERROR';
-          pick.lastError = errorMessage;
-          pick.lastErrorAt = new Date().toISOString();
-          hasAutoRetry = true;
-
-          updatePickHistoryStatus(pick.pickId, 'ERROR', {
-            batchId: batchId,
-            retryCount: pick.retryCount,
-            lastError: pick.lastError,
-            lastErrorAt: pick.lastErrorAt,
-            serverStatus: ''
-          });
-
-          updateHistoryStatus(pick.pickId, 'error', '再送待機中');
-          return true;
-        });
-
-        isApiProcessing = false;
-        activeBatchPickIds = {};
-        saveQueueToStorage();
-
-        console.error('batch send failed:', error);
-
-        if (hasAutoRetry) {
-          const waitMs = retryDelayMs_(
-            Math.max(0, maxRetryCount - 1),
-            QUEUE_RETRY_BASE_MS,
-            QUEUE_RETRY_MAX_MS,
-            QUEUE_RETRY_JITTER_MS
-          );
-          console.warn('送信再試行を分散待機します:', {
-            retryCount: maxRetryCount,
-            delayMs: waitMs
-          });
-          setTimeout(processQueue, waitMs);
-        } else if (finishDrainMode) {
-          if (apiQueue.length > 0) setTimeout(processQueue, randomInt_(180, 700));
-          else maybeCompleteFinishRecovery_();
-        } else {
-          // 通常作業中は要手動再送を端末履歴に保持し、他の新規データはハイブリッド条件で継続送信する。
-          scheduleHybridQueueSend_('after-error');
+        if (isAuthErrorMessage_(message)) {
+          sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+          authToken = '';
         }
+
+        markOneShotUnconfirmed_(batchId, batchItems, message);
       }
     }
 
@@ -4410,14 +4282,15 @@
 
         const unresolvedCount = progress.manualRetryRequired + progress.retrying;
         const canFinish = finishRecoveryComplete && unresolvedCount === 0;
-        const hasServerErrors = progress.serverErrors > 0;
+        const serverErrorDisplayCount = Math.max(progress.serverErrors, finishServerErrorCount);
+        const hasServerErrors = serverErrorDisplayCount > 0;
 
         if (nextButton) nextButton.disabled = !canFinish;
 
         if (finishRecoveryInProgress || finishRecoveryRequested) {
           if (title) title.textContent = '終了時データ確認中';
           if (message) {
-            message.textContent = 'サーバー受信状況を照合し、未受信データだけを再送します。';
+            message.textContent = '全データを1回のPOSTでGASへ一括送信し、受信確認を行います。';
             message.style.color = '#856404';
           }
         } else if (canFinish) {
@@ -4425,13 +4298,13 @@
           if (message) {
             message.textContent = hasServerErrors
               ? '通信データの欠落はありません。登録側エラーは管理者Webアプリで確認してください。'
-              : 'すべてのデータについてGAS受信確認が完了しました。';
+              : 'すべての作業データについてGAS受信確認が完了しました。実データ反映はサーバー側で順次処理されます。';
             message.style.color = hasServerErrors ? '#856404' : '#155724';
           }
         } else {
           if (title) title.textContent = '未送信データあり';
           if (message) {
-            message.textContent = finishRecoveryError || '未受信データが残っています。再確認・再送を実行してください。';
+            message.textContent = finishRecoveryError || '一括送信が完了していません。「全件を一括送信」を実行してください。';
             message.style.color = '#b31412';
           }
         }
@@ -4452,9 +4325,9 @@
               後続棚卸値で置換: ${progress.superseded} 件
             </p>
           ` : ''}
-          ${progress.serverErrors > 0 ? `
+          ${serverErrorDisplayCount > 0 ? `
             <p style="margin:8px 0 0 0; font-size:13px; color:#856404; font-weight:bold;">
-              登録側エラー（管理者対応）: ${progress.serverErrors} 件
+              登録側エラー（管理者対応）: ${serverErrorDisplayCount} 件
             </p>
           ` : ''}
           ${unresolvedCount > 0 ? `
@@ -4470,7 +4343,7 @@
           ${!canFinish && !finishRecoveryInProgress ? `
             <button type="button" onclick="retryFinishRecovery_()"
               style="margin-top:10px;padding:12px 16px;border:0;border-radius:6px;background:#4285f4;color:#fff;font-weight:bold;">
-              未送信を再確認・再送
+              全件を一括送信
             </button>
           ` : ''}
           ${canFinish ? `
@@ -4502,15 +4375,15 @@
         ? '送信一時停止'
         : (finishBlocked
             ? '終了時送信停止'
-            : (finishDrainMode ? '終了時データ送信中' : 'バックグラウンド送信中'));
+            : (finishDrainMode ? '全件一括送信中' : '端末保存中'));
       if (message) {
         message.textContent = authRequired
           ? '認証期限が切れています。未送信データは端末内に保持されています。再認証してください。'
           : (finishBlocked
               ? finishRecoveryError
               : (finishDrainMode
-                  ? '未受信分を最大30件ずつ送信しています。全件確認が終わるまでこの画面を閉じないでください。'
-                  : '作業を継続できます。通常は10件単位、最大45秒または無操作25秒で自動送信します。'));
+                  ? '端末内の全データを1回のPOSTで送信しています。GAS受信確認が終わるまでこの画面を閉じないでください。'
+                  : '作業中は通信しません。確定データは端末内へ保存され、作業終了時に全件を一括送信します。'));
         message.style.color = (authRequired || finishBlocked) ? '#b31412' : '#856404';
       }
 
@@ -4547,7 +4420,7 @@
         ${finishBlocked ? `
           <button type="button" onclick="retryFinishRecovery_()"
             style="margin-top:10px;padding:12px 16px;border:0;border-radius:6px;background:#4285f4;color:#fff;font-weight:bold;">
-            未送信を再確認・再送
+            全件を一括送信
           </button>
         ` : ''}
         <div style="margin-top:12px;padding:10px;border-radius:6px;background:#fff;border:2px solid #dc3545;">
@@ -4566,7 +4439,6 @@
       });
       const nowIso = new Date().toISOString();
 
-      // 同じpickIdの修正・削除・再送でも、最初に棚卸した日時を維持する。
       const operationAt = String(
         item.operationAt ||
         payload.operationAt ||
@@ -4598,16 +4470,33 @@
         createdAt: existingHistory && existingHistory.createdAt
           ? existingHistory.createdAt
           : operationAt,
-        queuedAt: nowIso
+        queuedAt: existingHistory && existingHistory.queuedAt
+          ? existingHistory.queuedAt
+          : nowIso
       };
 
-      apiQueue.push(pick);
-      upsertPickHistory(pick);
+      // 作業中はサーバー送信しない。
+      // 同じpickIdの数量修正/削除は、端末内キューの最新状態へ置換する。
+      const queueIndex = apiQueue.findIndex(function(row) {
+        return String(row && row.pickId || '') === pickId;
+      });
 
-      lastQueueActivityAt = Date.now();
+      if (queueIndex >= 0) {
+        pick.createdAt = apiQueue[queueIndex].createdAt || pick.createdAt;
+        // 修正/削除は最新操作としてキュー末尾へ移動する。
+        // 棚卸で同一商品CDが複数ある場合、最終操作の値が最後に評価されるようにする。
+        apiQueue.splice(queueIndex, 1);
+        pick.queuedAt = nowIso;
+        apiQueue.push(pick);
+      } else {
+        apiQueue.push(pick);
+      }
+
+      upsertPickHistory(pick);
       finishRecoveryComplete = false;
+      finishRecoveryError = '';
       saveQueueToStorage();
-      scheduleHybridQueueSend_('queue-add');
+      updateHistoryStatus(pickId, 'saving', '端末保存済み');
     }
 
 
@@ -4633,7 +4522,7 @@
     }
 
     function goToStep(step) {
-      // v1.3: ページ読込後の作業は通信断でも継続できる。
+      // v1.4: ページ読込後の作業は通信断でも継続でき、作業中はサーバー通信しない。
       // 通信状態は送信処理側で判定し、未送信データは端末へ保持する。
       document.querySelectorAll('.step-container').forEach(el => el.classList.remove('active'));
       document.getElementById('step' + step).classList.add('active');
@@ -4782,8 +4671,8 @@
         purpose: ctx ? ctx.purpose : sessionData.purpose, purposeName: ctx ? ctx.purposeName : sessionData.purposeName,
         items: [{ barcode: currentEditBarcode, qty: qty, id: payloadId, isDelete: isDelete }]
       };
-      if (isDelete) { updateHistoryStatus(payloadId, "saving", "順番待ち..."); } 
-      else { updateHistoryUI(payloadId, qty, "saving", "順番待ち..."); }
+      if (isDelete) { updateHistoryStatus(payloadId, "saving", "端末保存済み"); } 
+      else { updateHistoryUI(payloadId, qty, "saving", "端末保存済み"); }
       addToQueue(payload, isDelete);
     }
 
@@ -4805,7 +4694,7 @@
         items: [{ barcode: currentItemBarcode, qty: qty, id: payloadId }]
       };
 
-      addHistoryUI(payloadId, currentItemBarcode, qty, "saving", "順番待ち...");
+      addHistoryUI(payloadId, currentItemBarcode, qty, "saving", "端末保存済み");
       addToQueue(payload, false);
 
       document.getElementById('input-qty').value = "1";
@@ -4814,7 +4703,7 @@
       if (isFinish) {
         goToStep(6);
         finishDrainMode = true;
-        finishRecoveryRequested = true;
+        finishRecoveryRequested = false;
         finishRecoveryComplete = false;
         finishRecoveryError = '';
         clearHybridSendTimer_();
@@ -4866,7 +4755,7 @@
         progress.manualRetryRequired > 0 ||
         progress.retrying > 0
       ) {
-        alert('未受信データの回収が完了していません。「未送信を再確認・再送」を実行し、未受信0件を確認してください。');
+        alert('未受信データの回収が完了していません。「全件を一括送信」を実行し、未受信0件を確認してください。');
         goToStep(6);
         return;
       }
